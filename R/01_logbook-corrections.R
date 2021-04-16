@@ -1,68 +1,45 @@
 # ------------------------------------------------------------------------------
 # A single logbook munging to then be used downstream for stk match
 # This script is based on merging the 2020 ices datacall script and that
-# used in the 2019 anr-request
-# The idea is that the whole process is more or less in one script.
+# used in the 2019 anr-request. And then some
 #
-# run using
-# nohup R < R/001_munging.R --vanilla &
+# The output has the same number of records as the input. Gears that are not
+#  corrected and should not be used downstream "as is" are reorded as gid = -666
 #
 # TODO:
-#      0. Access data only once
-#      1. filter data (like only mobile bottom contact gear) as downstream as possible
-#      2. Include/adapt the code in prj2/vms/ICES_vms_datacall (metier etc)
-#      3. Higher resolution of dredge than just GID 15 - DONE
-#      4. Add the file for speed filtering by gid
+#      Higher resolution of dredge than just gid ==  15
+#      Higher resolution of nets than just  gid == 2
+#      Correct/standardize mesh size for gid == 2
+#      Should ICES metier be set here or further downstream?
+#      Should mobile id be allocated here or further downstream?  - downstream
 #
 # PROCESSING STEPS:
-#  A. Logbooks
-#      1. Get support tables
-#      2. Munge logbooks, merge mobile and static gear into one file
-#      3. Correct gear code
-#      4. Miscalenous
-#         Cap effort (tow time)
-#         Create gear width proxy
-#         Standardize mesh size
-#         Cap t2 so does not overlap with next t1
-#             NOTE: effort not adjusted accordingly
-
-
-
-
-#      3. add mobileid
-#      5. add ICES metier
-#      6. where either t1 and t2 within a fishing day is not defined
-#         group data within a fishing day
-#  B. stk data merging
-#      0. data is processed within a year loop, each year then stored separately
-#      1. year data compiled by each vessel separately
-# ------------------------------------------------------------------------------
-
-do.logbooks <- FALSE
-do.stk      <- TRUE
-
+#  1. Get and merge logbook and landings data
+#  2. Gear correction, stored in variable gid
+#  3. Lump gears
+#  4. Miscellaneous "corrections"
+#  5. Set gear width proxy
+#  6. Get rid of intermediary variables
+#  7. gear class of corrected gid
+#  8. Save file for downstream processing (data/LGS_corrected.rds)
 
 YEARS <- 2020:2009
 
 library(data.table)
-library(sf)
+#library(sf)
 library(tidyverse)
 library(lubridate)
 library(mar)
 source("R/functions.R")
-source("~/r/Pakkar2/omar/R/stk.R")
+#source("~/r/Pakkar2/omar/R/stk.R")
 con <- connect_mar()
 
-
-
-
 # ------------------------------------------------------------------------------
-# get logbook data
-#     No need to run this each time
-
+# 1. Get and merge logbook and landings data
 tmp.lb.base <-
   mar:::lb_base(con) %>%
   filter(year %in% YEARS)
+# catch is needed to establish target species when doing gear corrections
 tmp.lb.catch <-
   tmp.lb.base %>%
   select(visir, gid) %>%
@@ -91,11 +68,10 @@ LGS <-
   mutate(date = as_date(date),
          datel = as_date(datel),
          gid = as.integer(gid))
-
-# used to double-check if and where we "loose" data downstream
+# used to double-check if and where we "loose" or for that matter accidentally
+#  "add" data (may happen in joins) downstream
 n0 <- nrow(LGS)
-
-# here get the gear from landings
+# get the gear from landings
 tmp.ln.base <-
   mar:::ln_catch(con) %>%
   filter(!is.na(vid), !is.na(date)) %>%
@@ -110,17 +86,13 @@ tmp.lb.ln.match <-
   LGS %>% 
   match_nearest_date(tmp.ln.base) %>% 
   select(visir, gid.ln) %>% 
-  # just take the first match, i.e. only 1 visir per day
+  # just take the first match, i.e. ignore second landing within a day
   distinct(visir, .keep_all = TRUE)
-
 LGS <- 
   LGS %>% 
   left_join(tmp.lb.ln.match,
             by = "visir")
-
-n.lbmatch <- nrow(LGS)
-print(c(n0, n.lbmatch))
-
+print(c(n0, nrow(LGS)))
 LGS <- 
   LGS %>%
   # the total catch and the "dominant" species
@@ -131,26 +103,22 @@ LGS <-
               rename(sid.target = sid),
             by = c("visir", "gid")) %>% 
   rename(gid.lb = gid)
-
-n.catchmatch <- nrow(LGS)
-print(c(n0, n.catchmatch))
-
 LGS <- 
   LGS %>% 
   select(visir, vid, gid.lb, gid.ln, sid.target, everything())
+# rm(tmp.lb.base, tmp.lb.catch, tmp.lb.mobile, tmp.lb.static, tmp.ln.base, tmp.lb.ln.match)
+# end: Get and merge logbook and landings data
+# ------------------------------------------------------------------------------
 
-#rm(tmp.lb.base, tmp.lb.catch, tmp.lb.mobile, tmp.lb.static, tmp.ln.base, tmp.lb.ln.match)
 
 # ------------------------------------------------------------------------------
-# Gear corrections
-
+# 2. Gear corrections
 gears <-
   tbl_mar(con, "ops$einarhj.gear") %>% collect(n = Inf) %>%
   mutate(description = ifelse(gid == 92, "G.halibut net", description),
          gid = as.integer(gid),
          gclass = as.integer(gclass))
-
-LGS2 <- 
+LGS <- 
   LGS %>% 
   left_join(gears %>% select(gid.lb = gid, gc.lb = gclass), by = "gid.lb") %>% 
   left_join(gears %>% select(gid.ln = gid, gc.ln = gclass), by = "gid.ln") %>% 
@@ -159,143 +127,129 @@ LGS2 <-
          gid.source = NA_character_) %>% 
   mutate(i = gid.lb == gid.ln,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.lb=gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.lb=gid.ln", gid.source),
+         step = ifelse(i, 1L, NA_integer_)) %>% 
   mutate(i = is.na(gid) & gc.lb == gc.ln,
          gid = ifelse(i, gc.lb, gid),
-         gid.source = ifelse(i, "gc.lb=gc.ln->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "gc.lb=gc.ln   -> gid.lb", gid.source),
+         step = ifelse(i, 2L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 15L & gid.lb %in% c(5L, 6L),
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=15, gid.lb=5,6->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=15, gid.lb=5,6   -> gid.ln", gid.source),
+         step = ifelse(i, 3L, step)) %>% 
   mutate(i = is.na(gid) & 
            gid.ln == 21 & 
            gid.lb == 6 &
            !sid.target %in% c(30, 36, 41),
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target != 30,36,41->gid.lb",
-                             gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target != 30,36,41   -> gid.lb",
+                             gid.source),
+         step = ifelse(i, 4L, step)) %>% 
   mutate(i = is.na(gid) &
            gid.ln == 21 &
            gid.lb == 6 & 
            sid.target %in% c(22, 41),
          gid = ifelse(i, 14, gid),
-         gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target = 22,41->14", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target = 22,41   -> 14", gid.source),
+         step = ifelse(i, 5L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 6 & gid.lb == 7 & sid.target %in% c(11, 19, 30:36),
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=6, gid.lb=7, sid.target = 11,19,30:36->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=6, gid.lb=7, sid.target = 11,19,30:36   -> gid.lb", gid.source),
+         step = ifelse(i, 6L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 5,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=18, gid.lb=5->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=18, gid.lb=5   -> gid.ln", gid.source),
+         step = ifelse(i, 7L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 40,
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=18, gid.lb=40->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=18, gid.lb=40   -> gid.lb", gid.source),
+         step = ifelse(i, 8L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 14 & gid.lb == 6 & sid.target == 41,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=14, gid.lb=6, sid.target = 41->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=14, gid.lb=6, sid.target = 41   -> gid.ln", gid.source),
+         step = ifelse(i, 9L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 7 & gid.lb == 6,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=7, gid.lb=6->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=7, gid.lb=6   -> gid.ln", gid.source),
+         step = ifelse(i, 10L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 9 & gid.lb == 6,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=9, gid.lb=6->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=9, gid.lb=6   -> gid.ln", gid.source),
+         step = ifelse(i, 11L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 38,
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=18, gid.lb=38->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=18, gid.lb=38   -> gid.ln", gid.source),
+         step = ifelse(i, 12L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 6 & gid.lb == 14,
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=6, gid.lb=14->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=6, gid.lb=14   -> gid.lb", gid.source),
+         step = ifelse(i, 13L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 15 & gid.lb == 39,
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=15, gid.lb=39->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=15, gid.lb=39   -> gid.lb", gid.source),
+         step  = ifelse(i, 14L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 40 & gid.lb %in% c(5, 6),
          gid = ifelse(i, gid.ln, gid),
-         gid.source = ifelse(i, "gid.ln=40, gid.lb=5,6->gid.ln", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=40, gid.lb=5,6   -> gid.ln", gid.source),
+         step = ifelse(i, 15L, step)) %>% 
   mutate(i = is.na(gid) & is.na(gid.ln) & gid.lb %in% c(1:3),
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "is.na(gid.ln), gid.lb=1:3->gid.lb", gid.source)) %>% 
+         gid.source = ifelse(i, "is.na(gid.ln), gid.lb=1:3   -> gid.lb", gid.source),
+         step = ifelse(i, 16L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 21 & gid.lb == 6,
          gid = ifelse(i, 7, gid),
-         gid.source = ifelse(i, "gid.ln=21, gid.lb=6->7", gid.source)) %>% 
+         gid.source = ifelse(i, "gid.ln=21, gid.lb=6   -> 7", gid.source),
+         step = ifelse(i, 17L, step)) %>% 
   mutate(i = is.na(gid) & gid.ln == 21 & gid.lb == 14,
          gid = ifelse(i, gid.lb, gid),
-         gid.source = ifelse(i, "gid.ln=21, gid.lb=14->gid.lb", gid.source))
-# older mutate trials
-# gid = case_when(is.na(gid) & sid.target == 199L ~ -199L,
-#                 # sea urchin
-#                 is.na(gid) & sid.target == 191L ~   40L,
-#                 # kúfiskur
-#                 is.na(gid) & sid.target ==  46L ~   38L,
-#                 # scallops, sid 77 is some error, NA means zero catch?
-#                 is.na(gid) & sid.target %in% c(43L, 77L, NA_integer_) ~   15L,
-#                 # all trap fishier into one gid
-#                 # rock crab
-#                 is.na(gid) & sid.target == 689L ~   18L,
-#                 # whelk 
-#                 is.na(gid) & sid.target ==  45L  ~  18L,
-#                 # lobster
-#                 is.na(gid) & sid.target == 40L & gid.lb == 9L ~ gid.lb,
-#                 is.na(gid) & sid.target == 40L & gid.ln == 9L ~ gid.ln,
-#                 # shrimp
-#                 is.na(gid) & sid.target == 41L & gid.lb == 14L ~ gid.lb,
-#                 is.na(gid) & sid.target == 41L & gid.ln == 14L ~ gid.ln,
-#                 # lumpfish
-#                 is.na(gid) & sid.target == 961L & gid.lb == 2L ~ 2L,
-#                 # pelagic redfish
-#                 is.na(gid) & sid.target == 11L & gid.lb == 7L ~ gid.lb,
-#                 # atlantic mackerel
-#                 is.na(gid) & sid.target == 36L & gid.lb == 7L ~ gid.lb,
-#                 TRUE ~ NA_integer_),
-# gid.source = ifelse(!is.na(gid) & is.na(gid.source), "sid-target_and-then-some", NA_character_)) %>% 
-# Lump some gears
-LGS2 <-
-  LGS2 %>% 
-  mutate(gid = case_when(gid %in% c(8, 10, 12) ~ 4,   # purse seines
-                         gid %in% c(18, 39) ~ 17,      # traps
-                         TRUE ~ gid)) %>% 
-  # make the rest a negative number
-  mutate(gid = ifelse(is.na(gid), -666, gid)) %>% 
-  # "skip" these also
-  mutate(gid = ifelse(gid %in% c(4, 12, 42), -666, gid)) %>% 
-  # lump dredges into one single gear
-  mutate(gid = ifelse(gid %in% c(15, 37, 38, 40), 15, gid))
-
-table(LGS2$gid, useNA = "ifany")
-
-
+         gid.source = ifelse(i, "gid.ln=21, gid.lb=14   -> gid.lb", gid.source),
+         step = ifelse(i, 18L, step))
+print(c(n0, nrow(LGS)))
+LGS %>% 
+  count(step, gid, gid.lb, gid.ln, gid.source) %>% 
+  mutate(p = round(n / sum(n) * 100, 3)) %>% 
+  arrange(-n)
+# percentage with no corrected gear
+LGS %>% 
+  mutate(missing = is.na(gid)) %>% 
+  count(missing) %>% 
+  mutate(p = n / sum(n) * 100)
 # end: Gear corrections
 # ------------------------------------------------------------------------------
 
+
 # ------------------------------------------------------------------------------
-# Miscallenous "corrections"
-LGS2 <- 
-  LGS2 %>% 
+# 3. Lump some gears
+LGS <-
+  LGS %>% 
+  mutate(gid = case_when(gid %in% c(10, 12) ~ 4,   # purse seines
+                         gid %in% c(18, 39) ~ 18,      # traps
+                         TRUE ~ gid)) %>% 
+  # make the rest a negative number
+  mutate(gid = ifelse(is.na(gid), -666, gid)) %>% 
+  # "skip" these also in downstream processing
+  mutate(gid = ifelse(gid %in% c(4, 12, 42), -666, gid)) %>% 
+  # lump dredges into one single gear
+  mutate(gid = ifelse(gid %in% c(15, 37, 38, 40), 15, gid))
+print(c(n0, nrow(LGS)))
+# end: Lump some gears
+# ------------------------------------------------------------------------------
+
+
+# ------------------------------------------------------------------------------
+# 4. Miscellaneous "corrections"
+LGS <- 
+  LGS %>% 
   # cap effort hours
   mutate(effort = case_when(effort > 12 & gid ==  6 ~ 12,
                             effort > 24 & gid ==  7 ~ 24,
                             effort > 15 & gid == 14 ~ 15,
                             TRUE ~ effort)) %>% 
-  # specify gear width proxy
-  mutate(gear.width = case_when(gid %in% c(6L, 7L, 9L, 14L) ~ as.numeric(sweeps),
-                                gid %in% c(15L, 38L, 40L, -199L) ~ as.numeric(plow_width),
-                                TRUE ~ NA_real_)) %>% 
-  # standardize mesh size
-  mutate(mesh = ifelse(gid == 7, mesh_min, mesh)) %>%
-  # "standardize" mesh size
-  mutate(mesh.std = case_when(gid ==  9 ~ 80,
-                              gid %in% c(7, 10, 12, 14) ~ 40,
-                              gid %in% c(5, 6) & (mesh <= 147 | is.na(mesh)) ~ 135,
-                              gid %in% c(5, 6) &  mesh >  147 ~ 155,
-                              gid %in% c(15, 38, 40) ~ 100,
-                              TRUE ~ NA_real_)) %>%
-  # set mesh size for traps as zero
-  #  TODO: double check if that is actually what the code below achieves
-  mutate(mesh.std = ifelse(is.na(mesh.std), 0, mesh.std)) %>%
-  select(-c(mesh_min, plow_width)) %>% 
-  # Cap on the t2
+  # Cap on the t2 so not overlapping with next setting
   #    NOTE: Effort not adjusted accordingly
   arrange(vid, t1) %>%
   group_by(vid) %>%
   mutate(overlap = if_else(t2 > lead(t1), TRUE, FALSE, NA),
-         # testing
          t22 = if_else(overlap,
                        lead(t1) - minutes(1), # need to subtract 1 minute but get the format right
                        t2,
@@ -303,21 +257,103 @@ LGS2 <-
          t22 = ymd_hms(format(as.POSIXct(t22, origin="1970-01-01", tz="UTC"))),
          t2 = if_else(overlap & !is.na(t22), t22, t2, as.POSIXct(NA))) %>%
   ungroup() %>% 
-  select(-t22)
+  select(-t22) 
+
+# Mesh size "corrections"
+LGS <- 
+  LGS %>% 
+  # "correct" mesh size
+  mutate(mesh = ifelse(gid == 7, mesh_min, mesh),
+         mesh.std = case_when(gid ==  9 ~ 80,
+                              gid %in% c(7, 10, 12, 14) ~ 40,
+                              gid %in% c(5, 6) & (mesh <= 147 | is.na(mesh)) ~ 135,
+                              gid %in% c(5, 6) &  mesh >  147 ~ 155,
+                              gid %in% c(15, 38, 40) ~ 100,
+                              TRUE ~ NA_real_)) %>% 
+  # gill net stuff
+  mutate(tommur = ifelse(gid == 2, round(mesh / 2.54), NA)) %>% 
+  mutate(tommur = case_when(tommur <= 66 ~ 60,
+                            tommur <= 76 ~ 70,
+                            tommur <= 87 ~ 80,
+                            tommur <= 100000 ~ 90,
+                            TRUE ~ NA_real_)) %>% 
+  mutate(mesh.std = ifelse(gid == 2, round(tommur * 2.54), mesh.std)) %>% 
+  mutate(mesh.std = ifelse(gid == 2 & is.na(mesh.std),  203, mesh.std)) 
+LGS %>% 
+  count(gid, mesh.std)
 
 
-# end: Miscalenous "corrections"
+
+print(c(n0, nrow(LGS)))
+# end: Miscellaneous "corrections"
 # ------------------------------------------------------------------------------
 
-# gear class of coerrected gid
-LGS2 <- 
-  LGS2 %>% 
+
+# ------------------------------------------------------------------------------
+# 5. Set gear width proxy
+# NOTE: not a correction specify gear width proxy
+LGS <- 
+  LGS %>% 
+  mutate(gear.width = case_when(gid %in% c(6L, 7L, 9L, 14L) ~ as.numeric(sweeps),
+                                gid %in% c(15L, 38L, 40L) ~ as.numeric(plow_width),
+                                TRUE ~ NA_real_)) %>% 
+  # cap gear width
+  mutate(gear.width = case_when(gid ==  6L & gear.width > 250 ~ 250,
+                                gid ==  7L & gear.width > 250 ~ 250,
+                                gid ==  9L & gear.width >  75 ~  75,
+                                gid == 14L & gear.width >  55 ~  55,
+                                TRUE ~ gear.width))
+
+gear.width <- 
+  LGS %>% 
+  filter(gid %in% c(6, 7, 9, 14, 15, 37, 38, 40)) %>% 
+  group_by(gid) %>% 
+  summarise(gear.width.median = median(gear.width, na.rm = TRUE),
+            .groups = "drop")
+# use median gear width by gear, if gear width is missing
+#   could also try to do this by vessels. time scale (year) may also matter here
+LGS <- 
+  LGS %>% 
+  left_join(gear.width,
+            by = "gid") %>% 
+  mutate(gear.width = ifelse(gid %in% c(6, 7, 9, 14, 15, 37, 38, 40) & is.na(gear.width),
+                             gear.width.median,
+                             gear.width)) %>% 
+  select(-gear.width.median)
+
+# Put gear width of 5 as 500 - this is taken from thin air
+#   TODO: What gear width should be used
+LGS <- 
+  LGS %>% 
+  mutate(gear.width = ifelse(gid == 5, 500, gear.width))
+print(c(n0, nrow(LGS)))
+
+table(LGS$gid, !is.na(LGS$gear.width))
+
+LGS %>% 
+  group_by(gid) %>% 
+  summarise(gear.width = median(gear.width))
+# end: Set gear width proxy
+# ------------------------------------------------------------------------------
+
+
+# ------------------------------------------------------------------------------
+# 6. Get rid of intermediary variables
+LGS <- 
+  LGS %>% 
+  select(-c(gid.lb, gid.ln, gc.lb, gc.ln, sid.target, catch, p, n.sid, i,
+            overlap))
+
+
+# ------------------------------------------------------------------------------
+# 7. gear class of corrected gid
+LGS <- 
+  LGS %>% 
   left_join(gears %>% select(gid, gclass))
 
-table(LGS2$gid, useNA = "ifany")
-
+# 8. Save file for downstream processing
 # should here drop records of mobile gear with not t1 and t2??
 
-LGS2 %>% write_rds("data/LGS_corrected.rds")
+LGS %>% write_rds("data/LGS_corrected.rds")
 
 
