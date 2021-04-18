@@ -7,7 +7,7 @@
 #  corrected and should not be used downstream "as is" are reorded as gid = -666
 #
 # TODO:
-#      Higher resolution of dredge than just gid ==  15
+#      Higher resolution of dredge than just gid == 15
 #      Higher resolution of nets than just  gid == 2
 #      Should ICES metier be set here or further downstream?
 #      Check if landings data have any mesh size recordings, doubtful
@@ -33,15 +33,14 @@ source("R/functions.R")
 #source("~/r/Pakkar2/omar/R/stk.R")
 con <- connect_mar()
 
-
 fcon <- "data/LGS_corrected.log"
 
 cat(rep("-", 80) %>% glue::glue_collapse(),
     file = fcon, append = FALSE)
+cat_lh(NULL)
 cat_lh("Logbook corrections")
 cat_lh(now() %>% as.character())
 cat_lh(NULL)
-
 
 # ------------------------------------------------------------------------------
 # 1. Get and merge logbook and landings data
@@ -383,3 +382,7 @@ LGS <-
 LGS %>% write_rds("data/LGS_corrected.rds")
 
 LGS %>% nrow() %>% paste("- nrow of saved LGS") %>% cat_lh()
+
+cat_lh(NULL)
+cat_lh(NULL)
+devtools::session_info() %>% capture.output(file = fcon, append = TRUE)
