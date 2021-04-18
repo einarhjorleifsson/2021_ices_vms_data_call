@@ -327,9 +327,7 @@ LGS <-
   LGS %>% 
   mutate(gear.width = ifelse(gid == 5, 500, gear.width))
 print(c(n0, nrow(LGS)))
-
 table(LGS$gid, !is.na(LGS$gear.width))
-
 LGS %>% 
   group_by(gid) %>% 
   summarise(gear.width = median(gear.width))
