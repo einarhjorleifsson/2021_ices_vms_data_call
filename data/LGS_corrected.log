@@ -1,0 +1,294 @@
+--------------------------------------------------------------------------------Logbook corrections
+2021-04-18 17:43:39
+
+1. Get and merge logbook and landings data--------------------------------------
+1487673 - nrow original
+1487673 - nrow, landings merge
+1487673 - nrows at end of getting data
+2. Gear corrections-------------------------------------------------------------
+1487673 - nrow after gid correction
+overview of gear correction
+
+
+| step| gid| gid.lb| gid.ln|gid.source                                               |      n|      p|
+|----:|---:|------:|------:|:--------------------------------------------------------|------:|------:|
+|    1|   6|      6|      6|gid.lb=gid.ln                                            | 524855| 35.280|
+|    1|   5|      5|      5|gid.lb=gid.ln                                            | 234915| 15.791|
+|    1|   3|      3|      3|gid.lb=gid.ln                                            | 232241| 15.611|
+|    1|   1|      1|      1|gid.lb=gid.ln                                            | 193136| 12.982|
+|    1|   2|      2|      2|gid.lb=gid.ln                                            |  61975|  4.166|
+|    1|  14|     14|     14|gid.lb=gid.ln                                            |  54365|  3.654|
+|    2|   7|      7|     21|gc.lb=gc.ln   -> gid.lb                                  |  48162|  3.237|
+|    1|   9|      9|      9|gid.lb=gid.ln                                            |  46875|  3.151|
+|    2|   2|      2|     25|gc.lb=gc.ln   -> gid.lb                                  |  17356|  1.167|
+|    2|  15|     38|     15|gc.lb=gc.ln   -> gid.lb                                  |  15156|  1.019|
+|    1|  15|     15|     15|gid.lb=gid.ln                                            |   9347|  0.628|
+|    2|   2|      2|     91|gc.lb=gc.ln   -> gid.lb                                  |   9274|  0.623|
+|    3|  15|      6|     15|gid.ln=15, gid.lb=5,6   -> gid.ln                        |   7788|  0.524|
+|    2|   2|      2|     92|gc.lb=gc.ln   -> gid.lb                                  |   4495|  0.302|
+|    1|   7|      7|      7|gid.lb=gid.ln                                            |   3899|  0.262|
+|    3|  15|      5|     15|gid.ln=15, gid.lb=5,6   -> gid.ln                        |   2408|  0.162|
+|    2|  15|     40|     15|gc.lb=gc.ln   -> gid.lb                                  |   2079|  0.140|
+|    1|  40|     40|     40|gid.lb=gid.ln                                            |   1993|  0.134|
+|    2|   7|      7|     13|gc.lb=gc.ln   -> gid.lb                                  |   1926|  0.129|
+|    4|   6|      6|     21|gid.ln=21, gid.lb=6, sid.target != 30,36,41   -> gid.lb  |   1294|  0.087|
+|    7|  18|      5|     18|gid.ln=18, gid.lb=5   -> gid.ln                          |   1193|  0.080|
+|    6|   7|      7|      6|gid.ln=6, gid.lb=7, sid.target = 11,19,30:36   -> gid.lb |   1099|  0.074|
+|   NA|  NA|      6|     14|NA                                                       |    924|  0.062|
+|    2|  15|     38|     40|gc.lb=gc.ln   -> gid.lb                                  |    902|  0.061|
+|   12|  18|     38|     18|gid.ln=18, gid.lb=38   -> gid.ln                         |    853|  0.057|
+|   15|  40|      6|     40|gid.ln=40, gid.lb=5,6   -> gid.ln                        |    843|  0.057|
+|   10|   7|      6|      7|gid.ln=7, gid.lb=6   -> gid.ln                           |    733|  0.049|
+|   13|  14|     14|      6|gid.ln=6, gid.lb=14   -> gid.lb                          |    715|  0.048|
+|   NA|  NA|      3|      1|NA                                                       |    705|  0.047|
+|   NA|  NA|      1|      3|NA                                                       |    694|  0.047|
+|    2|  17|     39|     18|gc.lb=gc.ln   -> gid.lb                                  |    638|  0.043|
+|    2|   2|      2|     29|gc.lb=gc.ln   -> gid.lb                                  |    492|  0.033|
+|   11|   9|      6|      9|gid.ln=9, gid.lb=6   -> gid.ln                           |    480|  0.032|
+|    9|  14|      6|     14|gid.ln=14, gid.lb=6, sid.target = 41   -> gid.ln         |    307|  0.021|
+|   15|  40|      5|     40|gid.ln=40, gid.lb=5,6   -> gid.ln                        |    227|  0.015|
+|   NA|  NA|      9|      6|NA                                                       |    219|  0.015|
+|   NA|  NA|      7|      6|NA                                                       |    214|  0.014|
+|   16|   3|      3|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |    212|  0.014|
+|   14|  39|     39|     15|gid.ln=15, gid.lb=39   -> gid.lb                         |    205|  0.014|
+|   17|   7|      6|     21|gid.ln=21, gid.lb=6   -> 7                               |    193|  0.013|
+|   NA|  NA|      7|     12|NA                                                       |    193|  0.013|
+|   NA|  NA|      2|      3|NA                                                       |    136|  0.009|
+|   NA|  NA|      6|      5|NA                                                       |    121|  0.008|
+|   NA|  NA|      7|     10|NA                                                       |    117|  0.008|
+|    8|  40|     40|     18|gid.ln=18, gid.lb=40   -> gid.lb                         |    113|  0.008|
+|   NA|  NA|      3|     25|NA                                                       |    101|  0.007|
+|   NA|  NA|      5|      2|NA                                                       |     96|  0.006|
+|   NA|  NA|      2|      1|NA                                                       |     76|  0.005|
+|   NA|  NA|      6|      1|NA                                                       |     71|  0.005|
+|   NA|  NA|      2|      5|NA                                                       |     69|  0.005|
+|   NA|  NA|      5|      3|NA                                                       |     67|  0.005|
+|   NA|  NA|      1|     25|NA                                                       |     61|  0.004|
+|   NA|  NA|      5|      6|NA                                                       |     60|  0.004|
+|   NA|  NA|      6|      3|NA                                                       |     59|  0.004|
+|   NA|  NA|     39|     40|NA                                                       |     56|  0.004|
+|   NA|  NA|      9|     15|NA                                                       |     54|  0.004|
+|   18|  14|     14|     21|gid.ln=21, gid.lb=14   -> gid.lb                         |     52|  0.003|
+|    2|  15|     15|     40|gc.lb=gc.ln   -> gid.lb                                  |     51|  0.003|
+|    2|  17|     39|     17|gc.lb=gc.ln   -> gid.lb                                  |     50|  0.003|
+|   NA|  NA|      5|      1|NA                                                       |     50|  0.003|
+|   NA|  NA|     38|     17|NA                                                       |     50|  0.003|
+|   NA|  NA|      5|     14|NA                                                       |     44|  0.003|
+|   NA|  NA|     15|     41|NA                                                       |     39|  0.003|
+|    1|  12|     12|     12|gid.lb=gid.ln                                            |     35|  0.002|
+|   NA|  NA|      3|      2|NA                                                       |     35|  0.002|
+|   NA|  NA|      5|      9|NA                                                       |     32|  0.002|
+|   NA|  NA|     39|     42|NA                                                       |     24|  0.002|
+|   NA|  NA|      3|     45|NA                                                       |     23|  0.002|
+|   16|   1|      1|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |     22|  0.001|
+|   NA|  NA|      6|      2|NA                                                       |     20|  0.001|
+|   NA|  NA|     41|     14|NA                                                       |     20|  0.001|
+|    1|  42|     42|     42|gid.lb=gid.ln                                            |     19|  0.001|
+|   NA|  NA|      1|      6|NA                                                       |     19|  0.001|
+|   NA|  NA|      1|     18|NA                                                       |     17|  0.001|
+|   NA|  NA|     40|     17|NA                                                       |     15|  0.001|
+|   NA|  NA|     15|     20|NA                                                       |     14|  0.001|
+|    2|  17|     18|     17|gc.lb=gc.ln   -> gid.lb                                  |     13|  0.001|
+|   NA|  NA|      1|      2|NA                                                       |     13|  0.001|
+|   NA|  NA|      6|     20|NA                                                       |     13|  0.001|
+|   NA|  NA|      3|      6|NA                                                       |      9|  0.001|
+|   NA|  NA|      3|     20|NA                                                       |      9|  0.001|
+|   NA|  NA|     38|     25|NA                                                       |      9|  0.001|
+|   NA|  NA|      3|      5|NA                                                       |      8|  0.001|
+|   NA|  NA|      5|     20|NA                                                       |      8|  0.001|
+|   NA|  NA|     14|      5|NA                                                       |      8|  0.001|
+|   NA|  NA|      6|     25|NA                                                       |      7|  0.000|
+|   NA|  NA|      9|      7|NA                                                       |      7|  0.000|
+|   NA|  NA|      1|     45|NA                                                       |      6|  0.000|
+|   NA|  NA|      9|      1|NA                                                       |      6|  0.000|
+|   NA|  NA|     38|      3|NA                                                       |      6|  0.000|
+|   NA|  NA|      2|      6|NA                                                       |      5|  0.000|
+|   NA|  NA|      7|     14|NA                                                       |      5|  0.000|
+|   NA|  NA|      1|     20|NA                                                       |      4|  0.000|
+|   NA|  NA|      2|     45|NA                                                       |      4|  0.000|
+|   NA|  NA|      6|     12|NA                                                       |      4|  0.000|
+|   NA|  NA|      6|     13|NA                                                       |      4|  0.000|
+|   NA|  NA|      7|      3|NA                                                       |      4|  0.000|
+|   NA|  NA|     14|      3|NA                                                       |      4|  0.000|
+|   NA|  NA|      7|      1|NA                                                       |      3|  0.000|
+|   NA|  NA|      7|      5|NA                                                       |      3|  0.000|
+|   NA|  NA|      9|      2|NA                                                       |      3|  0.000|
+|   NA|  NA|     14|      1|NA                                                       |      3|  0.000|
+|   NA|  NA|     38|      2|NA                                                       |      3|  0.000|
+|   NA|  NA|      2|     17|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     15|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     29|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     91|NA                                                       |      2|  0.000|
+|   NA|  NA|      6|     17|NA                                                       |      2|  0.000|
+|   NA|  NA|      9|      5|NA                                                       |      2|  0.000|
+|   NA|  NA|     14|     40|NA                                                       |      2|  0.000|
+|   NA|  NA|     15|     25|NA                                                       |      2|  0.000|
+|   NA|  NA|     40|     25|NA                                                       |      2|  0.000|
+|   NA|  NA|     42|     15|NA                                                       |      2|  0.000|
+|    2|   4|     10|     12|gc.lb=gc.ln   -> gid.lb                                  |      1|  0.000|
+|    2|   7|      8|     21|gc.lb=gc.ln   -> gid.lb                                  |      1|  0.000|
+|   16|   2|      2|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |      1|  0.000|
+|   NA|  NA|      1|      5|NA                                                       |      1|  0.000|
+|   NA|  NA|      1|     14|NA                                                       |      1|  0.000|
+|   NA|  NA|      2|     15|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|      9|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|     17|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|     21|NA                                                       |      1|  0.000|
+|   NA|  NA|      5|     42|NA                                                       |      1|  0.000|
+|   NA|  NA|      6|     NA|NA                                                       |      1|  0.000|
+|   NA|  NA|     15|      3|NA                                                       |      1|  0.000|
+|   NA|  NA|     18|      3|NA                                                       |      1|  0.000|
+|   NA|  NA|     40|      3|NA                                                       |      1|  0.000|
+
+percentage with no corrected gear
+
+
+|missing |       n|          p|
+|:-------|-------:|----------:|
+|FALSE   | 1482989| 99.6851459|
+|TRUE    |    4684|  0.3148541|
+
+3. Lump some gears--------------------------------------------------------------
+4. Cap effort and end of action-------------------------------------------------
+5. Mesh size 'corrections'------------------------------------------------------
+Mesh size corrections
+
+
+|  gid| mesh.std|      n|
+|----:|--------:|------:|
+| -666|       NA|   4739|
+|    1|       NA| 193158|
+|    2|      152|  11977|
+|    2|      178|   6106|
+|    2|      203|  42013|
+|    2|      229|  33497|
+|    3|       NA| 232453|
+|    5|      135| 209716|
+|    5|      155|  25199|
+|    6|      135| 426571|
+|    6|      155|  99578|
+|    7|       40|  56013|
+|    9|       80|  47355|
+|   14|       40|  55439|
+|   15|      100|  40907|
+|   17|       NA|    701|
+|   18|       NA|   2251|
+
+6. Set gear width proxy---------------------------------------------------------
+
+
+|  gid| median.gear.width|
+|----:|-----------------:|
+| -666|                NA|
+|    1|                NA|
+|    2|                NA|
+|    3|                NA|
+|    5|               500|
+|    6|               100|
+|    7|                80|
+|    9|                45|
+|   14|                28|
+|   15|                 2|
+|   17|                NA|
+|   18|                NA|
+
+1487673 - nrow of saved LGS
+
+
+─ Session info ─────────────────────────────────────────────────────────────────────────────────
+ setting  value                       
+ version  R version 4.0.4 (2021-02-15)
+ os       CentOS Linux 8              
+ system   x86_64, linux-gnu           
+ ui       RStudio                     
+ language (EN)                        
+ collate  is_IS.UTF-8                 
+ ctype    is_IS.UTF-8                 
+ tz       Atlantic/Reykjavik          
+ date     2021-04-18                  
+
+─ Packages ─────────────────────────────────────────────────────────────────────────────────────
+ package     * version    date       lib source                              
+ assertthat    0.2.1      2019-03-21 [1] CRAN (R 4.0.2)                      
+ backports     1.2.1      2020-12-09 [1] CRAN (R 4.0.3)                      
+ blob          1.2.1      2020-01-20 [1] CRAN (R 4.0.2)                      
+ broom         0.7.6      2021-04-05 [1] CRAN (R 4.0.4)                      
+ cachem        1.0.4      2021-02-13 [1] CRAN (R 4.0.4)                      
+ callr         3.6.0      2021-03-28 [1] CRAN (R 4.0.4)                      
+ cellranger    1.1.0      2016-07-27 [1] CRAN (R 4.0.2)                      
+ cli           2.4.0      2021-04-05 [1] CRAN (R 4.0.4)                      
+ colorspace    2.0-0      2020-11-11 [1] CRAN (R 4.0.3)                      
+ crayon        1.4.1      2021-02-08 [1] CRAN (R 4.0.4)                      
+ data.table  * 1.14.0     2021-02-21 [1] CRAN (R 4.0.4)                      
+ DBI         * 1.1.1      2021-01-15 [1] CRAN (R 4.0.4)                      
+ dbplyr        1.4.4      2020-05-27 [1] CRAN (R 4.0.4)                      
+ desc          1.3.0      2021-03-05 [1] CRAN (R 4.0.4)                      
+ devtools      2.4.0      2021-04-07 [1] CRAN (R 4.0.4)                      
+ dplyr       * 1.0.5      2021-03-05 [1] CRAN (R 4.0.4)                      
+ ellipsis      0.3.1      2020-05-15 [1] CRAN (R 4.0.2)                      
+ fansi         0.4.2      2021-01-15 [1] CRAN (R 4.0.3)                      
+ fastmap       1.1.0      2021-01-25 [1] CRAN (R 4.0.3)                      
+ forcats     * 0.5.1      2021-01-27 [1] CRAN (R 4.0.3)                      
+ fs            1.5.0      2020-07-31 [1] CRAN (R 4.0.2)                      
+ generics      0.1.0      2020-10-31 [1] CRAN (R 4.0.3)                      
+ ggplot2     * 3.3.3      2020-12-30 [1] CRAN (R 4.0.3)                      
+ glue          1.4.2      2020-08-27 [1] CRAN (R 4.0.2)                      
+ gtable        0.3.0      2019-03-25 [1] CRAN (R 4.0.2)                      
+ haven         2.4.0      2021-04-14 [1] CRAN (R 4.0.4)                      
+ highr         0.9        2021-04-16 [1] CRAN (R 4.0.4)                      
+ hms           1.0.0      2021-01-13 [1] CRAN (R 4.0.3)                      
+ httr          1.4.2      2020-07-20 [1] CRAN (R 4.0.2)                      
+ jsonlite      1.7.2      2020-12-09 [1] CRAN (R 4.0.3)                      
+ knitr         1.32       2021-04-14 [1] CRAN (R 4.0.4)                      
+ lifecycle     1.0.0      2021-02-15 [1] CRAN (R 4.0.4)                      
+ lubridate   * 1.7.10     2021-02-26 [1] CRAN (R 4.0.4)                      
+ magrittr      2.0.1      2020-11-17 [1] CRAN (R 4.0.3)                      
+ mar         * 0.0.3.9001 2021-03-17 [1] Github (fishvice/mar@78349bf)       
+ memoise       2.0.0      2021-01-26 [1] CRAN (R 4.0.3)                      
+ modelr        0.1.8      2020-05-19 [1] CRAN (R 4.0.2)                      
+ munsell       0.5.0      2018-06-12 [1] CRAN (R 4.0.2)                      
+ pillar        1.6.0      2021-04-13 [1] CRAN (R 4.0.4)                      
+ pkgbuild      1.2.0      2020-12-15 [1] CRAN (R 4.0.3)                      
+ pkgconfig     2.0.3      2019-09-22 [1] CRAN (R 4.0.2)                      
+ pkgload       1.2.1      2021-04-06 [1] CRAN (R 4.0.4)                      
+ prettyunits   1.1.1      2020-01-24 [1] CRAN (R 4.0.2)                      
+ processx      3.5.1      2021-04-04 [1] CRAN (R 4.0.4)                      
+ ps            1.6.0      2021-02-28 [1] CRAN (R 4.0.4)                      
+ purrr       * 0.3.4      2020-04-17 [1] CRAN (R 4.0.2)                      
+ R6            2.5.0      2020-10-28 [1] CRAN (R 4.0.3)                      
+ Rcpp          1.0.6      2021-01-15 [1] CRAN (R 4.0.3)                      
+ readr       * 1.4.0      2020-10-05 [1] CRAN (R 4.0.2)                      
+ readxl        1.3.1      2019-03-13 [1] CRAN (R 4.0.2)                      
+ remotes       2.3.0      2021-04-01 [1] CRAN (R 4.0.4)                      
+ reprex        2.0.0      2021-04-02 [1] CRAN (R 4.0.4)                      
+ rlang         0.4.10     2020-12-30 [1] CRAN (R 4.0.3)                      
+ ROracle     * 1.3-1      2016-10-26 [2] CRAN (R 4.0.1)                      
+ rprojroot     2.0.2      2020-11-15 [1] CRAN (R 4.0.3)                      
+ rstudioapi    0.13       2020-11-12 [1] CRAN (R 4.0.3)                      
+ rvest         1.0.0      2021-03-09 [1] CRAN (R 4.0.4)                      
+ scales        1.1.1      2020-05-11 [1] CRAN (R 4.0.2)                      
+ sessioninfo   1.1.1      2018-11-05 [1] CRAN (R 4.0.2)                      
+ stringi       1.5.3      2020-09-09 [1] CRAN (R 4.0.2)                      
+ stringr     * 1.4.0      2019-02-10 [1] CRAN (R 4.0.2)                      
+ testthat      3.0.2      2021-02-14 [1] CRAN (R 4.0.4)                      
+ tibble      * 3.1.0      2021-02-25 [1] CRAN (R 4.0.4)                      
+ tidyr       * 1.1.3      2021-03-03 [1] CRAN (R 4.0.4)                      
+ tidyselect    1.1.0      2020-05-11 [1] CRAN (R 4.0.2)                      
+ tidyverse   * 1.3.0      2021-04-18 [1] Github (tidyverse/tidyverse@5316484)
+ usethis       2.0.1      2021-02-10 [1] CRAN (R 4.0.4)                      
+ utf8          1.2.1      2021-03-12 [1] CRAN (R 4.0.4)                      
+ vctrs         0.3.7      2021-03-29 [1] CRAN (R 4.0.4)                      
+ withr         2.4.1      2021-01-26 [1] CRAN (R 4.0.3)                      
+ xfun          0.22       2021-03-11 [1] CRAN (R 4.0.4)                      
+ xml2          1.3.2      2020-04-23 [1] CRAN (R 4.0.2)                      
+
+[1] /home/haf/einarhj/r/x86_64/library
+[2] /nfs/hafkaldi/opt/hafkaldi/local/linux/lib/R/site/4.0/x86_64/library
+[3] /usr/lib64/R/library
+[4] /usr/share/R/library
+
+Matching vessel id (vid) and mobileid (mid)
+
+
+
+
