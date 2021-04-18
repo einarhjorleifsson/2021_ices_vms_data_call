@@ -9,9 +9,8 @@
 # TODO:
 #      Higher resolution of dredge than just gid ==  15
 #      Higher resolution of nets than just  gid == 2
-#      Correct/standardize mesh size for gid == 2
 #      Should ICES metier be set here or further downstream?
-#      Should mobile id be allocated here or further downstream?  - downstream
+#      Check if landings data have any mesh size recordings, doubtful
 #
 # PROCESSING STEPS:
 #  1. Get and merge logbook and landings data
@@ -34,8 +33,19 @@ source("R/functions.R")
 #source("~/r/Pakkar2/omar/R/stk.R")
 con <- connect_mar()
 
+
+fcon <- "data/LGS_corrected.log"
+
+cat(rep("-", 80) %>% glue::glue_collapse(),
+    file = fcon, append = FALSE)
+cat_lh("Logbook corrections")
+cat_lh(now() %>% as.character())
+cat_lh(NULL)
+
+
 # ------------------------------------------------------------------------------
 # 1. Get and merge logbook and landings data
+cat_lh(str_pad("1. Get and merge logbook and landings data", width = 80, side = "right", pad = "-"))
 tmp.lb.base <-
   mar:::lb_base(con) %>%
   filter(year %in% YEARS)
@@ -71,6 +81,7 @@ LGS <-
 # used to double-check if and where we "loose" or for that matter accidentally
 #  "add" data (may happen in joins) downstream
 n0 <- nrow(LGS)
+n0 %>% paste("- nrow original") %>% cat_lh()
 # get the gear from landings
 tmp.ln.base <-
   mar:::ln_catch(con) %>%
@@ -93,6 +104,7 @@ LGS <-
   left_join(tmp.lb.ln.match,
             by = "visir")
 print(c(n0, nrow(LGS)))
+nrow(LGS) %>% paste("- nrow, landings merge") %>%  cat_lh()
 LGS <- 
   LGS %>%
   # the total catch and the "dominant" species
@@ -106,6 +118,7 @@ LGS <-
 LGS <- 
   LGS %>% 
   select(visir, vid, gid.lb, gid.ln, sid.target, everything())
+LGS %>% nrow() %>% paste("- nrows at end of getting data") %>% cat_lh()
 # rm(tmp.lb.base, tmp.lb.catch, tmp.lb.mobile, tmp.lb.static, tmp.ln.base, tmp.lb.ln.match)
 # end: Get and merge logbook and landings data
 # ------------------------------------------------------------------------------
@@ -113,6 +126,7 @@ LGS <-
 
 # ------------------------------------------------------------------------------
 # 2. Gear corrections
+cat_lh(str_pad("2. Gear corrections", width = 80, side = "right", pad = "-"))
 gears <-
   tbl_mar(con, "ops$einarhj.gear") %>% collect(n = Inf) %>%
   mutate(description = ifelse(gid == 92, "G.halibut net", description),
@@ -205,21 +219,28 @@ LGS <-
          gid.source = ifelse(i, "gid.ln=21, gid.lb=14   -> gid.lb", gid.source),
          step = ifelse(i, 18L, step))
 print(c(n0, nrow(LGS)))
+nrow(LGS) %>% paste("- nrow after gid correction") %>% cat_lh()
+"overview of gear correction" %>% cat_lh()
 LGS %>% 
   count(step, gid, gid.lb, gid.ln, gid.source) %>% 
   mutate(p = round(n / sum(n) * 100, 3)) %>% 
-  arrange(-n)
-# percentage with no corrected gear
+  arrange(-n) %>% 
+  knitr::kable() %>% 
+  cat_lh()
+cat_lh("percentage with no corrected gear")
 LGS %>% 
   mutate(missing = is.na(gid)) %>% 
   count(missing) %>% 
-  mutate(p = n / sum(n) * 100)
+  mutate(p = n / sum(n) * 100) %>% 
+  knitr::kable() %>% 
+  cat_lh()
 # end: Gear corrections
 # ------------------------------------------------------------------------------
 
 
 # ------------------------------------------------------------------------------
 # 3. Lump some gears
+cat_lh(str_pad("3. Lump some gears", width = 80, side = "right", pad = "-"))
 LGS <-
   LGS %>% 
   mutate(gid = case_when(gid %in% c(10, 12) ~ 4,   # purse seines
@@ -237,7 +258,8 @@ print(c(n0, nrow(LGS)))
 
 
 # ------------------------------------------------------------------------------
-# 4. Miscellaneous "corrections"
+# 4. Cap effort and end of action
+cat_lh(str_pad("4. Cap effort and end of action", width = 80, side = "right", pad = "-"))
 LGS <- 
   LGS %>% 
   # cap effort hours
@@ -259,7 +281,10 @@ LGS <-
   ungroup() %>% 
   select(-t22) 
 
-# Mesh size "corrections"
+# ------------------------------------------------------------------------------
+# 5. Mesh size "corrections"
+cat_lh(str_pad("5. Mesh size 'corrections'", width = 80, side = "right", pad = "-"))
+
 LGS <- 
   LGS %>% 
   # "correct" mesh size
@@ -278,11 +303,12 @@ LGS <-
                             tommur <= 100000 ~ 90,
                             TRUE ~ NA_real_)) %>% 
   mutate(mesh.std = ifelse(gid == 2, round(tommur * 2.54), mesh.std)) %>% 
-  mutate(mesh.std = ifelse(gid == 2 & is.na(mesh.std),  203, mesh.std)) 
+  mutate(mesh.std = ifelse(gid == 2 & is.na(mesh.std),  203, mesh.std))
+cat_lh("Mesh size corrections")
 LGS %>% 
-  count(gid, mesh.std)
-
-
+  count(gid, mesh.std) %>% 
+  knitr::kable() %>% 
+  cat_lh()
 
 print(c(n0, nrow(LGS)))
 # end: Miscellaneous "corrections"
@@ -290,8 +316,8 @@ print(c(n0, nrow(LGS)))
 
 
 # ------------------------------------------------------------------------------
-# 5. Set gear width proxy
-# NOTE: not a correction specify gear width proxy
+# 6. Set gear width proxy
+cat_lh(str_pad("6. Set gear width proxy", width = 80, side = "right", pad = "-"))
 LGS <- 
   LGS %>% 
   mutate(gear.width = case_when(gid %in% c(6L, 7L, 9L, 14L) ~ as.numeric(sweeps),
@@ -327,16 +353,18 @@ LGS <-
   LGS %>% 
   mutate(gear.width = ifelse(gid == 5, 500, gear.width))
 print(c(n0, nrow(LGS)))
-table(LGS$gid, !is.na(LGS$gear.width))
+table(LGS$gid, !is.na(LGS$gear.width)) 
 LGS %>% 
   group_by(gid) %>% 
-  summarise(gear.width = median(gear.width))
+  summarise(median.gear.width = median(gear.width)) %>% 
+  knitr::kable() %>% 
+  cat_lh()
 # end: Set gear width proxy
 # ------------------------------------------------------------------------------
 
 
 # ------------------------------------------------------------------------------
-# 6. Get rid of intermediary variables
+# 7. Get rid of intermediary variables
 LGS <- 
   LGS %>% 
   select(-c(gid.lb, gid.ln, gc.lb, gc.ln, sid.target, catch, p, n.sid, i,
@@ -344,7 +372,7 @@ LGS <-
 
 
 # ------------------------------------------------------------------------------
-# 7. gear class of corrected gid
+# 8. gear class of corrected gid
 LGS <- 
   LGS %>% 
   left_join(gears %>% select(gid, gclass))
@@ -354,4 +382,4 @@ LGS <-
 
 LGS %>% write_rds("data/LGS_corrected.rds")
 
-
+LGS %>% nrow() %>% paste("- nrow of saved LGS") %>% cat_lh()

@@ -24,3 +24,25 @@ match_nearest_date <- function(lb, ln) {
               by = c("vid", "date.ln"))
   
 }
+
+
+cat_lh <- function(x, file = "data/LGS_corrected.log") {
+  
+  if(class(x)[1] == "character") {
+    
+    if(length(x) > 1) x <- glue::glue_collapse(x, sep = ",")
+    cat(x, file = file, append = TRUE)
+    
+  }
+  
+  if(class(x)[1] %in% c("tbl_df", "tbl", "data.frame")) {
+    capture.output(as.data.frame(x), file = file, append = TRUE)
+  }
+  
+  if(class(x)[1] == "knitr_kable") {
+    capture.output(x, file = file, append = TRUE)
+  }
+  
+  cat("\n", file = file, append = TRUE)
+  
+}
