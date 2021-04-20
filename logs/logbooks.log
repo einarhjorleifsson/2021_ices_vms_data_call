@@ -1,0 +1,1272 @@
+
+R version 4.0.4 (2021-02-15) -- "Lost Library Book"
+Copyright (C) 2021 The R Foundation for Statistical Computing
+Platform: x86_64-redhat-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # ------------------------------------------------------------------------------
+> # run this as:
+> #  nohup R < R/01_logbook-corrections.R --vanilla > logs/logbooks.log &
+> lubridate::now()
+[1] "2021-04-20 10:21:25 GMT"
+> 
+> # ------------------------------------------------------------------------------
+> # A single logbook munging to then be used downstream for stk match
+> # This script is based on merging 2020 ices datacall internal script and that
+> # used in the 2019 anr-request. Added then gear corrections and other things.
+> #
+> # The output has the same number of records as the input. In the downstream
+> # process the data used should be those where variable **use** is TRUE.
+> #
+> # TODO:
+> #      Should check the lb_functions in the mar-package
+> #      Check vids in landings - could be used to filter out wrong vids in
+> #       logbooks
+> #      Higher resolution of dredge than just gid == 15, domestic purpose only
+> #      Higher resolution of nets than just  gid == 2, domestic purpose only
+> #      Should ICES metier be set here or further downstream?
+> #
+> # PROCESSING STEPS:
+> #  1. Get and merge logbook and landings data
+> #  2. Gear corrections
+> #  3. Lump some gears
+> #  4. Cap effort and end of action
+> #  5. Mesh size "corrections"
+> #  6. Set gear width proxy
+> #  7. gear class of corrected gid
+> #  8. Add vessel information
+> #  9. Add metier
+> 
+> YEARS <- 2020:2009
+> 
+> library(data.table)
+> library(tidyverse)
+── Attaching packages ─────────────────────────────────────── tidyverse 1.3.0 ──
+✔ ggplot2 3.3.3     ✔ purrr   0.3.4
+✔ tibble  3.1.0     ✔ dplyr   1.0.5
+✔ tidyr   1.1.3     ✔ stringr 1.4.0
+✔ readr   1.4.0     ✔ forcats 0.5.1
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::between()   masks data.table::between()
+✖ dplyr::filter()    masks stats::filter()
+✖ dplyr::first()     masks data.table::first()
+✖ dplyr::lag()       masks stats::lag()
+✖ dplyr::last()      masks data.table::last()
+✖ purrr::transpose() masks data.table::transpose()
+> library(lubridate)
+
+Attaching package: ‘lubridate’
+
+The following objects are masked from ‘package:data.table’:
+
+    hour, isoweek, mday, minute, month, quarter, second, wday, week,
+    yday, year
+
+The following objects are masked from ‘package:base’:
+
+    date, intersect, setdiff, union
+
+> library(mar)
+Loading required package: ROracle
+Loading required package: DBI
+> con <- connect_mar()
+> 
+> # ------------------------------------------------------------------------------
+> # 0. Functions
+> match_nearest_date <- function(lb, ln) {
++   
++   lb.dt <-
++     lb %>%
++     select(vid, datel) %>%
++     distinct() %>%
++     setDT()
++   
++   ln.dt <-
++     ln %>%
++     select(vid, datel) %>%
++     distinct() %>%
++     mutate(dummy = datel) %>%
++     setDT()
++   
++   res <-
++     lb.dt[, date.ln := ln.dt[lb.dt, dummy, on = c("vid", "datel"), roll = "nearest"]] %>%
++     as_tibble()
++   
++   lb %>%
++     left_join(res,
++               by = c("vid", "datel")) %>%
++     left_join(ln %>% select(vid, date.ln = datel, gid.ln),
++               by = c("vid", "date.ln"))
++   
++ }
+> # end: 0. Functions
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 1. Get and merge logbook and landings data
+> vessels <- 
++   mar:::vessel_registry(con, standardize = TRUE) %>% 
++   # no dummy vessels
++   filter(!vid %in% c(0, 1, 3:5),
++          !is.na(name)) %>% 
++   arrange(vid)
+> tmp.lb.base <-
++   mar:::lb_base(con) %>%
++   filter(year %in% YEARS) %>% 
++   inner_join(vessels %>% select(vid),
++              by = "vid")
+> tmp.lb.catch <-
++   tmp.lb.base %>%
++   select(visir, gid) %>%
++   left_join(mar:::lb_catch(con) %>%
++               mutate(catch = catch / 1e3),
++             by = "visir") %>%
++   collect(n = Inf) %>% 
++   arrange(visir, desc(catch), sid) %>%
++   group_by(visir) %>%
++   mutate(total = sum(catch),
++          p = catch / total,
++          n.sid = n()) %>%
++   ungroup()
+> tmp.lb.mobile <-
++   tmp.lb.base %>%
++   # make sure some static gears in the mobile are not include
++   filter(!gid %in% c(1, 2, 3)) %>% 
++   inner_join(mar:::lb_mobile(con),
++              by = c("visir")) %>%
++   collect(n = Inf)
+> tmp.lb.static <-
++   tmp.lb.base %>%
++   inner_join(mar:::lb_static(con),
++              by = "visir") %>%
++   collect(n = Inf)
+> LGS <-
++   bind_rows(tmp.lb.mobile %>% mutate(source = "mobile"), 
++             tmp.lb.static %>% mutate(source = "static")) %>%
++   mutate(date = as_date(date),
++          datel = as_date(datel),
++          gid = as.integer(gid))
+> # nrows to double-check if and where we "loose" or for that matter accidentally
+> #  "add" data (may happen in joins) downstream
+> n0 <- nrow(LGS)
+> paste("Original number of records:", n0)
+[1] "Original number of records: 1487589"
+> # Flag vessels with less than 5 records (assume they are vid errors)
+> LGS <- 
++   LGS %>% 
++   group_by(vid) %>% 
++   mutate(n.records = n()) %>% 
++   ungroup() %>% 
++   mutate(use = ifelse(n.records > 5, TRUE, FALSE)) %>% 
++   select(-n.records)
+> # get the gear from landings
+> tmp.ln.base <-
++   mar:::ln_catch(con) %>%
++   filter(!is.na(vid), !is.na(date)) %>%
++   mutate(year = year(date)) %>%
++   filter(year %in% YEARS) %>%
++   select(vid, gid.ln = gid, datel = date) %>%
++   distinct() %>%
++   collect(n = Inf) %>%
++   mutate(datel = as_date(datel),
++          gid.ln = as.integer(gid.ln))
+> tmp.lb.ln.match <-
++   LGS %>% 
++   match_nearest_date(tmp.ln.base) %>% 
++   select(visir, gid.ln) %>% 
++   # just take the first match, i.e. ignore second landing within a day
++   distinct(visir, .keep_all = TRUE)
+> LGS <- 
++   LGS %>% 
++   left_join(tmp.lb.ln.match,
++             by = "visir")
+> LGS <- 
++   LGS %>%
++   # the total catch and the "dominant" species
++   left_join(tmp.lb.catch %>%
++               group_by(visir) %>%
++               slice(1) %>%
++               ungroup() %>% 
++               rename(sid.target = sid),
++             by = c("visir", "gid")) %>% 
++   rename(gid.lb = gid)
+> LGS <- 
++   LGS %>% 
++   select(visir, vid, gid.lb, gid.ln, sid.target, everything())
+> # Vessels per year - few vessels in 2020 is because of records for some
+> #  small vessels have not been entered
+> LGS %>% 
++   group_by(year, gid.lb) %>% 
++   summarise(n.vids = n_distinct(vid)) %>% 
++   spread(gid.lb, n.vids)
+`summarise()` has grouped output by 'year'. You can override using the `.groups` argument.
+# A tibble: 12 x 19
+# Groups:   year [12]
+    year   `1`   `2`   `3`   `5`   `6`   `7`   `8`   `9`  `10`  `12`  `14`  `15`
+   <dbl> <int> <int> <int> <int> <int> <int> <int> <int> <int> <int> <int> <int>
+ 1  2009   336   128   652    68    79    34    NA    16    NA    NA    21     1
+ 2  2010   289   140   876    59    76    60    NA    17    NA    NA    26     5
+ 3  2011   282   165   928    53    71    89    NA    16    NA    NA    32     8
+ 4  2012   294   170   988    54    74   105    NA    16     1     2    42     7
+ 5  2013   278   152   980    48    76   103    NA    15    NA     1    55     7
+ 6  2014   282   132   985    44    70    98     1    15    NA     1    45     4
+ 7  2015   257   141   888    44    65    67    NA    13    NA     1    34     8
+ 8  2016   232   280   892    44    65    34    NA    12    NA    NA    33    11
+ 9  2017   213   295   801    46    70    32    NA     9    NA    NA    22    NA
+10  2018   192   267   757    44    70    27    NA    10    NA    NA    15     2
+11  2019   182   286   759    48    75    22    NA     9    NA    NA    16     1
+12  2020   108    78   129    43    80    21    NA     7    NA    NA    12    NA
+# … with 6 more variables: 18 <int>, 38 <int>, 39 <int>, 40 <int>, 41 <int>,
+#   42 <int>
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # rm(tmp.lb.base, tmp.lb.catch, tmp.lb.mobile, tmp.lb.static, tmp.ln.base, tmp.lb.ln.match)
+> # end: Get and merge logbook and landings data
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 2. Gear corrections
+> gears <-
++   tbl_mar(con, "ops$einarhj.gear") %>% collect(n = Inf) %>%
++   mutate(description = ifelse(gid == 92, "G.halibut net", description),
++          gid = as.integer(gid),
++          gclass = as.integer(gclass))
+> LGS <- 
++   LGS %>% 
++   left_join(gears %>% select(gid.lb = gid, gc.lb = gclass), by = "gid.lb") %>% 
++   left_join(gears %>% select(gid.ln = gid, gc.ln = gclass), by = "gid.ln") %>% 
++   select(visir:gid.ln, gc.lb, gc.ln, everything()) %>% 
++   mutate(gid = NA_integer_,
++          gid.source = NA_character_) %>% 
++   mutate(i = gid.lb == gid.ln,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.lb=gid.ln", gid.source),
++          step = ifelse(i, 1L, NA_integer_)) %>% 
++   mutate(i = is.na(gid) & gc.lb == gc.ln,
++          gid = ifelse(i, gc.lb, gid),
++          gid.source = ifelse(i, "gc.lb=gc.ln   -> gid.lb", gid.source),
++          step = ifelse(i, 2L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 15L & gid.lb %in% c(5L, 6L),
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=15, gid.lb=5,6   -> gid.ln", gid.source),
++          step = ifelse(i, 3L, step)) %>% 
++   mutate(i = is.na(gid) & 
++            gid.ln == 21 & 
++            gid.lb == 6 &
++            !sid.target %in% c(30, 36, 41),
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target != 30,36,41   -> gid.lb",
++                              gid.source),
++          step = ifelse(i, 4L, step)) %>% 
++   mutate(i = is.na(gid) &
++            gid.ln == 21 &
++            gid.lb == 6 & 
++            sid.target %in% c(22, 41),
++          gid = ifelse(i, 14, gid),
++          gid.source = ifelse(i, "gid.ln=21, gid.lb=6, sid.target = 22,41   -> 14", gid.source),
++          step = ifelse(i, 5L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 6 & gid.lb == 7 & sid.target %in% c(11, 19, 30:36),
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=6, gid.lb=7, sid.target = 11,19,30:36   -> gid.lb", gid.source),
++          step = ifelse(i, 6L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 5,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=18, gid.lb=5   -> gid.ln", gid.source),
++          step = ifelse(i, 7L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 40,
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=18, gid.lb=40   -> gid.lb", gid.source),
++          step = ifelse(i, 8L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 14 & gid.lb == 6 & sid.target == 41,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=14, gid.lb=6, sid.target = 41   -> gid.ln", gid.source),
++          step = ifelse(i, 9L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 7 & gid.lb == 6,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=7, gid.lb=6   -> gid.ln", gid.source),
++          step = ifelse(i, 10L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 9 & gid.lb == 6,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=9, gid.lb=6   -> gid.ln", gid.source),
++          step = ifelse(i, 11L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 18 & gid.lb == 38,
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=18, gid.lb=38   -> gid.ln", gid.source),
++          step = ifelse(i, 12L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 6 & gid.lb == 14,
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=6, gid.lb=14   -> gid.lb", gid.source),
++          step = ifelse(i, 13L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 15 & gid.lb == 39,
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=15, gid.lb=39   -> gid.lb", gid.source),
++          step  = ifelse(i, 14L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 40 & gid.lb %in% c(5, 6),
++          gid = ifelse(i, gid.ln, gid),
++          gid.source = ifelse(i, "gid.ln=40, gid.lb=5,6   -> gid.ln", gid.source),
++          step = ifelse(i, 15L, step)) %>% 
++   mutate(i = is.na(gid) & is.na(gid.ln) & gid.lb %in% c(1:3),
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "is.na(gid.ln), gid.lb=1:3   -> gid.lb", gid.source),
++          step = ifelse(i, 16L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 21 & gid.lb == 6,
++          gid = ifelse(i, 7, gid),
++          gid.source = ifelse(i, "gid.ln=21, gid.lb=6   -> 7", gid.source),
++          step = ifelse(i, 17L, step)) %>% 
++   mutate(i = is.na(gid) & gid.ln == 21 & gid.lb == 14,
++          gid = ifelse(i, gid.lb, gid),
++          gid.source = ifelse(i, "gid.ln=21, gid.lb=14   -> gid.lb", gid.source),
++          step = ifelse(i, 18L, step))
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> LGS %>% 
++   count(step, gid, gid.lb, gid.ln, gid.source) %>% 
++   mutate(p = round(n / sum(n) * 100, 3)) %>% 
++   arrange(-n) %>% 
++   knitr::kable(caption = "Overview of gear corrections")
+
+
+Table: Overview of gear corrections
+
+| step| gid| gid.lb| gid.ln|gid.source                                               |      n|      p|
+|----:|---:|------:|------:|:--------------------------------------------------------|------:|------:|
+|    1|   6|      6|      6|gid.lb=gid.ln                                            | 524855| 35.282|
+|    1|   5|      5|      5|gid.lb=gid.ln                                            | 234915| 15.792|
+|    1|   3|      3|      3|gid.lb=gid.ln                                            | 232216| 15.610|
+|    1|   1|      1|      1|gid.lb=gid.ln                                            | 193133| 12.983|
+|    1|   2|      2|      2|gid.lb=gid.ln                                            |  61974|  4.166|
+|    1|  14|     14|     14|gid.lb=gid.ln                                            |  54365|  3.655|
+|    2|   7|      7|     21|gc.lb=gc.ln   -> gid.lb                                  |  48162|  3.238|
+|    1|   9|      9|      9|gid.lb=gid.ln                                            |  46875|  3.151|
+|    2|   2|      2|     25|gc.lb=gc.ln   -> gid.lb                                  |  17356|  1.167|
+|    2|  15|     38|     15|gc.lb=gc.ln   -> gid.lb                                  |  15156|  1.019|
+|    1|  15|     15|     15|gid.lb=gid.ln                                            |   9347|  0.628|
+|    2|   2|      2|     91|gc.lb=gc.ln   -> gid.lb                                  |   9274|  0.623|
+|    3|  15|      6|     15|gid.ln=15, gid.lb=5,6   -> gid.ln                        |   7788|  0.524|
+|    2|   2|      2|     92|gc.lb=gc.ln   -> gid.lb                                  |   4495|  0.302|
+|    1|   7|      7|      7|gid.lb=gid.ln                                            |   3899|  0.262|
+|    3|  15|      5|     15|gid.ln=15, gid.lb=5,6   -> gid.ln                        |   2408|  0.162|
+|    2|  15|     40|     15|gc.lb=gc.ln   -> gid.lb                                  |   2079|  0.140|
+|    1|  40|     40|     40|gid.lb=gid.ln                                            |   1993|  0.134|
+|    2|   7|      7|     13|gc.lb=gc.ln   -> gid.lb                                  |   1926|  0.129|
+|    4|   6|      6|     21|gid.ln=21, gid.lb=6, sid.target != 30,36,41   -> gid.lb  |   1294|  0.087|
+|    7|  18|      5|     18|gid.ln=18, gid.lb=5   -> gid.ln                          |   1193|  0.080|
+|    6|   7|      7|      6|gid.ln=6, gid.lb=7, sid.target = 11,19,30:36   -> gid.lb |   1099|  0.074|
+|   NA|  NA|      6|     14|NA                                                       |    924|  0.062|
+|    2|  15|     38|     40|gc.lb=gc.ln   -> gid.lb                                  |    902|  0.061|
+|   12|  18|     38|     18|gid.ln=18, gid.lb=38   -> gid.ln                         |    853|  0.057|
+|   15|  40|      6|     40|gid.ln=40, gid.lb=5,6   -> gid.ln                        |    843|  0.057|
+|   10|   7|      6|      7|gid.ln=7, gid.lb=6   -> gid.ln                           |    733|  0.049|
+|   13|  14|     14|      6|gid.ln=6, gid.lb=14   -> gid.lb                          |    715|  0.048|
+|   NA|  NA|      3|      1|NA                                                       |    705|  0.047|
+|   NA|  NA|      1|      3|NA                                                       |    694|  0.047|
+|    2|  17|     39|     18|gc.lb=gc.ln   -> gid.lb                                  |    638|  0.043|
+|    2|   2|      2|     29|gc.lb=gc.ln   -> gid.lb                                  |    492|  0.033|
+|   11|   9|      6|      9|gid.ln=9, gid.lb=6   -> gid.ln                           |    480|  0.032|
+|    9|  14|      6|     14|gid.ln=14, gid.lb=6, sid.target = 41   -> gid.ln         |    307|  0.021|
+|   15|  40|      5|     40|gid.ln=40, gid.lb=5,6   -> gid.ln                        |    227|  0.015|
+|   NA|  NA|      9|      6|NA                                                       |    219|  0.015|
+|   NA|  NA|      7|      6|NA                                                       |    214|  0.014|
+|   14|  39|     39|     15|gid.ln=15, gid.lb=39   -> gid.lb                         |    205|  0.014|
+|   16|   3|      3|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |    200|  0.013|
+|   17|   7|      6|     21|gid.ln=21, gid.lb=6   -> 7                               |    193|  0.013|
+|   NA|  NA|      7|     12|NA                                                       |    193|  0.013|
+|   NA|  NA|      2|      3|NA                                                       |    136|  0.009|
+|   NA|  NA|      6|      5|NA                                                       |    121|  0.008|
+|   NA|  NA|      7|     10|NA                                                       |    117|  0.008|
+|    8|  40|     40|     18|gid.ln=18, gid.lb=40   -> gid.lb                         |    113|  0.008|
+|   NA|  NA|      3|     25|NA                                                       |    101|  0.007|
+|   NA|  NA|      5|      2|NA                                                       |     96|  0.006|
+|   NA|  NA|      2|      1|NA                                                       |     76|  0.005|
+|   NA|  NA|      6|      1|NA                                                       |     71|  0.005|
+|   NA|  NA|      2|      5|NA                                                       |     69|  0.005|
+|   NA|  NA|      5|      3|NA                                                       |     67|  0.005|
+|   NA|  NA|      1|     25|NA                                                       |     61|  0.004|
+|   NA|  NA|      5|      6|NA                                                       |     60|  0.004|
+|   NA|  NA|      6|      3|NA                                                       |     59|  0.004|
+|   NA|  NA|     39|     40|NA                                                       |     56|  0.004|
+|   NA|  NA|      9|     15|NA                                                       |     54|  0.004|
+|   18|  14|     14|     21|gid.ln=21, gid.lb=14   -> gid.lb                         |     52|  0.003|
+|    2|  15|     15|     40|gc.lb=gc.ln   -> gid.lb                                  |     51|  0.003|
+|    2|  17|     39|     17|gc.lb=gc.ln   -> gid.lb                                  |     50|  0.003|
+|   NA|  NA|      5|      1|NA                                                       |     50|  0.003|
+|   NA|  NA|     38|     17|NA                                                       |     50|  0.003|
+|   NA|  NA|      5|     14|NA                                                       |     44|  0.003|
+|    1|  12|     12|     12|gid.lb=gid.ln                                            |     35|  0.002|
+|   NA|  NA|      3|      2|NA                                                       |     35|  0.002|
+|   NA|  NA|      5|      9|NA                                                       |     32|  0.002|
+|   NA|  NA|     39|     42|NA                                                       |     24|  0.002|
+|   NA|  NA|      3|     45|NA                                                       |     23|  0.002|
+|   NA|  NA|      6|      2|NA                                                       |     20|  0.001|
+|   NA|  NA|     41|     14|NA                                                       |     20|  0.001|
+|    1|  42|     42|     42|gid.lb=gid.ln                                            |     19|  0.001|
+|   16|   1|      1|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |     19|  0.001|
+|   NA|  NA|      1|      6|NA                                                       |     19|  0.001|
+|   NA|  NA|      1|     18|NA                                                       |     17|  0.001|
+|   NA|  NA|     40|     17|NA                                                       |     15|  0.001|
+|   NA|  NA|     15|     20|NA                                                       |     14|  0.001|
+|    2|  17|     18|     17|gc.lb=gc.ln   -> gid.lb                                  |     13|  0.001|
+|   NA|  NA|      1|      2|NA                                                       |     13|  0.001|
+|   NA|  NA|      6|     20|NA                                                       |     13|  0.001|
+|   NA|  NA|      3|      6|NA                                                       |      9|  0.001|
+|   NA|  NA|      3|     20|NA                                                       |      9|  0.001|
+|   NA|  NA|     38|     25|NA                                                       |      9|  0.001|
+|   NA|  NA|      3|      5|NA                                                       |      8|  0.001|
+|   NA|  NA|      5|     20|NA                                                       |      8|  0.001|
+|   NA|  NA|     14|      5|NA                                                       |      8|  0.001|
+|   NA|  NA|      6|     25|NA                                                       |      7|  0.000|
+|   NA|  NA|      9|      7|NA                                                       |      7|  0.000|
+|   NA|  NA|      1|     45|NA                                                       |      6|  0.000|
+|   NA|  NA|      9|      1|NA                                                       |      6|  0.000|
+|   NA|  NA|     38|      3|NA                                                       |      6|  0.000|
+|   NA|  NA|      2|      6|NA                                                       |      5|  0.000|
+|   NA|  NA|      7|     14|NA                                                       |      5|  0.000|
+|   NA|  NA|      1|     20|NA                                                       |      4|  0.000|
+|   NA|  NA|      2|     45|NA                                                       |      4|  0.000|
+|   NA|  NA|      6|     12|NA                                                       |      4|  0.000|
+|   NA|  NA|      6|     13|NA                                                       |      4|  0.000|
+|   NA|  NA|      7|      3|NA                                                       |      4|  0.000|
+|   NA|  NA|     14|      3|NA                                                       |      4|  0.000|
+|   NA|  NA|      7|      1|NA                                                       |      3|  0.000|
+|   NA|  NA|      7|      5|NA                                                       |      3|  0.000|
+|   NA|  NA|      9|      2|NA                                                       |      3|  0.000|
+|   NA|  NA|     14|      1|NA                                                       |      3|  0.000|
+|   NA|  NA|     38|      2|NA                                                       |      3|  0.000|
+|   NA|  NA|      2|     17|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     15|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     29|NA                                                       |      2|  0.000|
+|   NA|  NA|      3|     91|NA                                                       |      2|  0.000|
+|   NA|  NA|      6|     17|NA                                                       |      2|  0.000|
+|   NA|  NA|      9|      5|NA                                                       |      2|  0.000|
+|   NA|  NA|     14|     40|NA                                                       |      2|  0.000|
+|   NA|  NA|     15|     25|NA                                                       |      2|  0.000|
+|   NA|  NA|     40|     25|NA                                                       |      2|  0.000|
+|   NA|  NA|     42|     15|NA                                                       |      2|  0.000|
+|    2|   4|     10|     12|gc.lb=gc.ln   -> gid.lb                                  |      1|  0.000|
+|    2|   7|      8|     21|gc.lb=gc.ln   -> gid.lb                                  |      1|  0.000|
+|   16|   2|      2|     NA|is.na(gid.ln), gid.lb=1:3   -> gid.lb                    |      1|  0.000|
+|   NA|  NA|      1|      5|NA                                                       |      1|  0.000|
+|   NA|  NA|      1|     14|NA                                                       |      1|  0.000|
+|   NA|  NA|      2|     15|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|      9|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|     17|NA                                                       |      1|  0.000|
+|   NA|  NA|      3|     21|NA                                                       |      1|  0.000|
+|   NA|  NA|      5|     42|NA                                                       |      1|  0.000|
+|   NA|  NA|     15|      3|NA                                                       |      1|  0.000|
+|   NA|  NA|     18|      3|NA                                                       |      1|  0.000|
+|   NA|  NA|     40|      3|NA                                                       |      1|  0.000|
+> LGS %>% 
++   mutate(missing = is.na(gid)) %>% 
++   count(missing) %>% 
++   mutate(p = n / sum(n) * 100) %>% 
++   knitr::kable(caption = "Number and percentage of missing gear")
+
+
+Table: Number and percentage of missing gear
+
+|missing |       n|         p|
+|:-------|-------:|---------:|
+|FALSE   | 1482945| 99.687817|
+|TRUE    |    4644|  0.312183|
+> # end: Gear corrections
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 3. Lump some gears
+> LGS <-
++   LGS %>% 
++   mutate(gid = case_when(gid %in% c(10, 12) ~ 4,   # purse seines
++                          gid %in% c(18, 39) ~ 18,      # traps
++                          TRUE ~ gid)) %>% 
++   # make the rest a negative number
++   mutate(gid = ifelse(is.na(gid), -666, gid)) %>% 
++   # "skip" these also in downstream processing
++   mutate(gid = ifelse(gid %in% c(4, 12, 42), -666, gid)) %>% 
++   # lump dredges into one single gear
++   mutate(gid = ifelse(gid %in% c(15, 37, 38, 40), 15, gid))
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # end: Lump some gears
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 4. Cap effort and end of action
+> LGS <- 
++   LGS %>% 
++   # cap effort hours
++   mutate(effort = case_when(effort > 12 & gid ==  6 ~ 12,
++                             effort > 24 & gid ==  7 ~ 24,
++                             effort > 15 & gid == 14 ~ 15,
++                             TRUE ~ effort)) %>% 
++   # Cap on the t2 so not overlapping with next setting
++   #    NOTE: Effort not adjusted accordingly
++   arrange(vid, t1) %>%
++   group_by(vid) %>%
++   mutate(overlap = if_else(t2 > lead(t1), TRUE, FALSE, NA),
++          t22 = if_else(overlap,
++                        lead(t1) - minutes(1), # need to subtract 1 minute but get the format right
++                        t2,
++                        as.POSIXct(NA)),
++          t22 = ymd_hms(format(as.POSIXct(t22, origin="1970-01-01", tz="UTC"))),
++          t2 = if_else(overlap & !is.na(t22), t22, t2, as.POSIXct(NA))) %>%
++   ungroup() %>% 
++   select(-t22) 
+> # if either t1 or t2 is missing from mobile towing gear except dredges, 
+> #   flag that records should not be used donwstream
+> LGS <- 
++   LGS %>% 
++   mutate(use = ifelse(gid %in% c(6, 7, 9, 14) & (is.na(t1) | is.na(t2)),
++                       FALSE,
++                       use))
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # end: 4. Cap effort and end of action
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 5. Mesh size "corrections"
+> LGS <- 
++   LGS %>% 
++   # "correct" mesh size
++   mutate(mesh = ifelse(gid == 7, mesh_min, mesh),
++          mesh.std = case_when(gid ==  9 ~ 80,
++                               gid %in% c(7, 10, 12, 14) ~ 40,
++                               gid %in% c(5, 6) & (mesh <= 147 | is.na(mesh)) ~ 135,
++                               gid %in% c(5, 6) &  mesh >  147 ~ 155,
++                               gid %in% c(15, 38, 40) ~ 100,
++                               TRUE ~ NA_real_)) %>% 
++   # gill net stuff
++   mutate(tommur = ifelse(gid == 2, round(mesh / 2.54), NA)) %>% 
++   mutate(tommur = case_when(tommur <= 66 ~ 60,
++                             tommur <= 76 ~ 70,
++                             tommur <= 87 ~ 80,
++                             tommur <= 100000 ~ 90,
++                             TRUE ~ NA_real_)) %>% 
++   mutate(mesh.std = ifelse(gid == 2, round(tommur * 2.54), mesh.std)) %>% 
++   mutate(mesh.std = ifelse(gid == 2 & is.na(mesh.std),  203, mesh.std))
+> # Fill missing values with zeros
+> LGS <- 
++   LGS %>% 
++   mutate(mesh.std = ifelse(gid %in% c(-666, 1, 3, 17, 18), 0, mesh.std))
+> LGS %>% 
++   count(gid, mesh.std) %>% 
++   knitr::kable(caption = "Mesh sizes and number of records by gear")
+
+
+Table: Mesh sizes and number of records by gear
+
+|  gid| mesh.std|      n|
+|----:|--------:|------:|
+| -666|        0|   4699|
+|    1|        0| 193152|
+|    2|      152|  11975|
+|    2|      178|   6110|
+|    2|      203|  42010|
+|    2|      229|  33497|
+|    3|        0| 232416|
+|    5|      135| 209716|
+|    5|      155|  25199|
+|    6|      135| 426571|
+|    6|      155|  99578|
+|    7|       40|  56013|
+|    9|       80|  47355|
+|   14|       40|  55439|
+|   15|      100|  40907|
+|   17|        0|    701|
+|   18|        0|   2251|
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # end:5. Mesh size "corrections"
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 6. Set gear width proxy
+> LGS <- 
++   LGS %>% 
++   mutate(gear.width = case_when(gid %in% c(6L, 7L, 9L, 14L) ~ as.numeric(sweeps),
++                                 gid %in% c(15L, 38L, 40L) ~ as.numeric(plow_width),
++                                 TRUE ~ NA_real_)) %>% 
++   # cap gear width
++   mutate(gear.width = case_when(gid ==  6L & gear.width > 250 ~ 250,
++                                 gid ==  7L & gear.width > 250 ~ 250,
++                                 gid ==  9L & gear.width >  75 ~  75,
++                                 gid == 14L & gear.width >  55 ~  55,
++                                 TRUE ~ gear.width))
+> gear.width <- 
++   LGS %>% 
++   filter(gid %in% c(6, 7, 9, 14, 15, 37, 38, 40)) %>% 
++   group_by(gid) %>% 
++   summarise(gear.width.median = median(gear.width, na.rm = TRUE),
++             .groups = "drop")
+> # use median gear width by gear, if gear width is missing
+> #   could also try to do this by vessels. time scale (year) may also matter here
+> LGS <- 
++   LGS %>% 
++   left_join(gear.width,
++             by = "gid") %>% 
++   mutate(gear.width = ifelse(gid %in% c(6, 7, 9, 14, 15, 37, 38, 40) & is.na(gear.width),
++                              gear.width.median,
++                              gear.width)) %>% 
++   select(-gear.width.median)
+> 
+> # Put gear width of 5 as 500 - this is taken from thin air
+> #   TODO: What gear width should be used
+> LGS <- 
++   LGS %>% 
++   mutate(gear.width = ifelse(gid == 5, 500, gear.width))
+> LGS %>% 
++   group_by(gid) %>% 
++   summarise(median.gear.width = median(gear.width),
++             mean.gear.width = mean(gear.width),
++             sd.gear.width = sd(gear.width)) %>% 
++   knitr::kable(caption = "Statistics on gear width")
+
+
+Table: Statistics on gear width
+
+|  gid| median.gear.width| mean.gear.width| sd.gear.width|
+|----:|-----------------:|---------------:|-------------:|
+| -666|                NA|              NA|            NA|
+|    1|                NA|              NA|            NA|
+|    2|                NA|              NA|            NA|
+|    3|                NA|              NA|            NA|
+|    5|               500|      500.000000|     0.0000000|
+|    6|               100|      103.633037|    40.7773577|
+|    7|                80|       85.901630|    51.8957206|
+|    9|                45|       45.005575|     5.7704145|
+|   14|                28|       27.862119|    12.8643529|
+|   15|                 2|        2.021231|     0.1660077|
+|   17|                NA|              NA|            NA|
+|   18|                NA|              NA|            NA|
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # end: Set gear width proxy
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # Get rid of intermediary variables
+> LGS <- 
++   LGS %>% 
++   select(-c(gid.lb, gid.ln, gc.lb, gc.ln, sid.target, catch, p, n.sid, i,
++             overlap))
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 7. gear class of corrected gid
+> LGS <- 
++   LGS %>% 
++   left_join(gears %>% select(gid, gclass),
++             by = "gid")
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # ------------------------------------------------------------------------------
+> 
+> # ------------------------------------------------------------------------------
+> # 8. Add vessel information
+> vessels <- 
++   mar:::vessel_registry(con, standardize = TRUE) %>% 
++   filter(!vid %in% c(0, 1, 3:5),
++          !is.na(name)) %>% 
++   arrange(vid) %>% 
++   collect(n = Inf)
+> LGS <- 
++   LGS %>% 
++   left_join(vessels %>% 
++               select(vid, kw = engine_kw, length, length_class))
+Joining, by = "vid"
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 9. Add metier
+> metier <-
++   tribble(
++     ~gid, ~dcf4, ~dcf5, ~dcf5b,
++     1, "LLS", "Fish",      "DEF",     # Long line
++     2, "GSN", "Fish",      "DEF",     # Gill net
++     3, "LHM", "Fish",      "DEF",     # Jiggers (hooks)
++     4, "PS",  "Fish",      "SPF",     # "Cod" seine
++     5, "SDN", "Fish",      "DEF",     # Scottish seine
++     6, "OTB", "Fish",      "DEF",     # Bottom fish trawl
++     7, "OTM", "Fish",      "SPF",     # Pelagic trawl
++     9, "OTB", "Nephrops",  "MCD",     # Bottom nephrops trawl
++     10, "PS",  "Fish",      "SPF",     # "Herring" seine
++     12, "PS",  "Fish",      "SPF",     # "Capelin" seine
++     14, "OTB", "Shrimp",    "MCD",     # Bottom shrimp trawl
++     15, "DRB", "Miscellaneous",       "MOL",     # Mollusc (scallop) dredge
++     17, "TRP", "Misc",      "MIX",     # Traps
++     38, "DRB", "Mollusc",   "MOL",     # Mollusc	(cyprine) dredge
++     39, "TRP", "Mollusc",   "MOL",     # Buccinum trap
++     40, "DRB", "Echinoderm","MOL",     # Sea-urchins dredge
++     42, NA_character_,    NA_character_, NA_character_)
+> # metiers used
+> metier %>% 
++   filter(gid %in% unique(LGS$gid)) %>% 
++   knitr::kable(caption = "Metiers used")
+
+
+Table: Metiers used
+
+| gid|dcf4 |dcf5          |dcf5b |
+|---:|:----|:-------------|:-----|
+|   1|LLS  |Fish          |DEF   |
+|   2|GSN  |Fish          |DEF   |
+|   3|LHM  |Fish          |DEF   |
+|   5|SDN  |Fish          |DEF   |
+|   6|OTB  |Fish          |DEF   |
+|   7|OTM  |Fish          |SPF   |
+|   9|OTB  |Nephrops      |MCD   |
+|  14|OTB  |Shrimp        |MCD   |
+|  15|DRB  |Miscellaneous |MOL   |
+|  17|TRP  |Misc          |MIX   |
+> LGS <- 
++   LGS %>% 
++   left_join(metier, by = "gid")
+> # Flag gear not to be used downstream, derive dcf6
+> LGS <-
++   LGS %>% 
++   # NOTE: FILTER OUT UNKNOWN GID and then some
++   mutate(use = ifelse(gid %in% c(-666, 17, 18), FALSE, use)) %>% 
++   select(-mesh) %>% 
++   rename(mesh = mesh.std) %>% 
++   mutate(dcf6 = paste(dcf4, dcf5b, mesh, "0_0", sep = "_")) %>% 
++   mutate(type = "LE",
++          country = "ICE")
+> LGS %>% 
++   count(gid, dcf4, dcf5, dcf5b, mesh, dcf6) %>% 
++   knitr::kable(caption = "Records by metier")
+
+
+Table: Records by metier
+
+|  gid|dcf4 |dcf5          |dcf5b | mesh|dcf6            |      n|
+|----:|:----|:-------------|:-----|----:|:---------------|------:|
+| -666|NA   |NA            |NA    |    0|NA_NA_0_0_0     |   4699|
+|    1|LLS  |Fish          |DEF   |    0|LLS_DEF_0_0_0   | 193152|
+|    2|GSN  |Fish          |DEF   |  152|GSN_DEF_152_0_0 |  11975|
+|    2|GSN  |Fish          |DEF   |  178|GSN_DEF_178_0_0 |   6110|
+|    2|GSN  |Fish          |DEF   |  203|GSN_DEF_203_0_0 |  42010|
+|    2|GSN  |Fish          |DEF   |  229|GSN_DEF_229_0_0 |  33497|
+|    3|LHM  |Fish          |DEF   |    0|LHM_DEF_0_0_0   | 232416|
+|    5|SDN  |Fish          |DEF   |  135|SDN_DEF_135_0_0 | 209716|
+|    5|SDN  |Fish          |DEF   |  155|SDN_DEF_155_0_0 |  25199|
+|    6|OTB  |Fish          |DEF   |  135|OTB_DEF_135_0_0 | 426571|
+|    6|OTB  |Fish          |DEF   |  155|OTB_DEF_155_0_0 |  99578|
+|    7|OTM  |Fish          |SPF   |   40|OTM_SPF_40_0_0  |  56013|
+|    9|OTB  |Nephrops      |MCD   |   80|OTB_MCD_80_0_0  |  47355|
+|   14|OTB  |Shrimp        |MCD   |   40|OTB_MCD_40_0_0  |  55439|
+|   15|DRB  |Miscellaneous |MOL   |  100|DRB_MOL_100_0_0 |  40907|
+|   17|TRP  |Misc          |MIX   |    0|TRP_MIX_0_0_0   |    701|
+|   18|NA   |NA            |NA    |    0|NA_NA_0_0_0     |   2251|
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # ------------------------------------------------------------------------------
+> 
+> # ------------------------------------------------------------------------------
+> # 10. ICES rectangles
+> res <- data.frame(SI_LONG = LGS$lon1,
++                   SI_LATI = LGS$lat1)
+> LGS <- 
++   LGS %>% 
++   mutate(ices = vmstools::ICESrectangle(res)) %>% 
++   mutate(valid.ices = !is.na(vmstools::ICESrectangle2LonLat(ices)$SI_LONG))
+Warning message:
+Problem with `mutate()` input `valid.ices`.
+ℹ Some stat squares are not valid. Please check the help files for ICESrectangle2LonLat() for more information about the formal definition of valid ICES rectangles.
+ℹ Input `valid.ices` is `!is.na(vmstools::ICESrectangle2LonLat(ices)$SI_LONG)`. 
+> LGS %>% 
++   count(valid.ices) %>% 
++   knitr::kable(caption = "Valid ICES rectangles")
+
+
+Table: Valid ICES rectangles
+
+|valid.ices |       n|
+|:----------|-------:|
+|FALSE      |    1303|
+|TRUE       | 1486286|
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # ------------------------------------------------------------------------------
+> 
+> # ------------------------------------------------------------------------------
+> # 11. Anonymize vid
+> #     May want to do this more downstream
+> anonymize.vid <-
++   LGS %>%
++   select(vid) %>%
++   distinct() %>%
++   mutate(vid0 = 1:n(),
++          vid0 = paste0("ICE", str_pad(vid0, 4, pad = "0")))
+> LGS <- 
++   LGS %>% 
++   left_join(anonymize.vid, by = "vid")
+> paste("Number of records:", nrow(LGS))
+[1] "Number of records: 1487589"
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # 11. Save file for downstream processing
+> LGS %>% write_rds("data/LGS_corrected.rds")
+> # ------------------------------------------------------------------------------
+> 
+> 
+> # ADDENDUM ---------------------------------------------------------------------
+> #  This is still in the making, needs to be reviewed carefully
+> #  Deals with matching vid and mobileid
+> #  Deals with all but gid 6, 7, 9, and 14 need to be done on daily summary in
+> #   order to process the ais data. Hence loose the original resolution of
+> #   visir
+> #  Question is what should the logbook annex vs the ais annex source file be
+> #   (lumped visir by day or not). Prefer that same data is used for both.
+> #   Check if "nest"-ing may be a good way to handle that
+> #   CURRENTLY THE AIS MUNGING IS BASED ON data/LGS_corrected_use.rds
+> #    that is generated below
+> 
+> 
+> LGS2 <- 
++   LGS %>% 
++   # NOTE: FILTER OUT UNKNOWN GID, where t1 and t2 not reported for 
++   #   gid 6, 7, 9 & 14 and then some
++   filter(use)
+> n0 <- nrow(LGS2)
+> (nrow(LGS) - nrow(LGS2)) / nrow(LGS) * 100
+[1] 0.5320018
+> 
+> # easiest approach: for gear class not 6, 7, 9, 14 summarise the catch for the day
+> # and generate a new visir and set t1 and t2 as start and end time of the day
+> lgs1 <-
++   LGS2 %>%
++   filter(gid %in% c(6, 7, 9, 14),
++          !is.na(t1), !is.na(t2))
+> lgs2 <-
++   LGS2 %>%
++   filter(!gid %in% c(6, 7, 9, 14))
+> nrow(lgs1) + nrow(lgs2) == nrow(LGS2)
+[1] TRUE
+> 
+> table(!is.na(lgs2$vid))
+
+  TRUE 
+794875 
+> table(!is.na(lgs2$date))
+
+  TRUE 
+794875 
+> table(!is.na(lgs2$gid))
+
+  TRUE 
+794875 
+> visir_visir_lookup <- 
++   lgs2 %>% 
++   group_by(vid, date, gid) %>% 
++   mutate(visir1 = min(visir)) %>% 
++   ungroup() %>% 
++   select(visir1, visir)
+> nrow(lgs2)
+[1] 794875
+> length(unique(visir_visir_lookup$visir))
+[1] 794875
+> length(unique(lgs2$visir))
+[1] 794875
+> 
+> lgs2B <- 
++   lgs2 %>% 
++   group_by(vid, date, gid, dcf4, dcf5, dcf5b) %>%
++   # get here all essential variables that are needed downstream
++   summarise(visir = min(visir),
++             n.sets = n(),
++             towtime = sum(towtime),
++             effort = sum(effort),
++             total = sum(total),
++             gear.width = mean(gear.width),
++             .groups = "drop") %>%
++   mutate(t1 = ymd_hms(paste0(year(date), "-", month(date), "-", day(date),
++                              " 00:00:00")),
++          t2 = ymd_hms(paste0(year(date), "-", month(date), "-", day(date),
++                              " 23:59:00")))
+> 
+> nrow(lgs2B)
+[1] 549739
+> length(unique(visir_visir_lookup$visir1))
+[1] 549739
+> 
+> # 1. Transform the logbook data such time is stored as a single variable,
+> #     using an additional variable (startend) to indicate the if the time
+> #     value refers to the start or end of the haul.
+> 
+> 
+> # ------------------------------------------------------------------------------
+> # LAST MINUTE STUFF - moved R/02_match_vid-mid.R here
+> # Note this is a bit recursive because LGS_corrected.rds is used to 
+> # find the match. Should possible source the file here
+> # put the R/02_match_vid-mid.r code here
+> summary.lgs <-
++   LGS %>% 
++   group_by(vid) %>% 
++   summarise(n.lgs = n(),
++             n.gid = n_distinct(gid),
++             min.date = min(date),
++             max.date = max(date),
++             .groups = "drop")
+> # ------------------------------------------------------------------------------
+> # get mobileid for vid
+> vid.stk <-
++   mar:::stk_mobile_icelandic(con, correct = TRUE, vidmatch = TRUE) %>% 
++   collect(n = Inf)
+> MIDs <- 
++   summary.lgs %>% 
++   left_join(vid.stk) %>% 
++   pull(mid) %>% 
++   unique()
+Joining, by = "vid"
+> # unexpected
+> table(!is.na(MIDs), useNA = "ifany")
+
+FALSE  TRUE 
+    1  1711 
+> MIDs <- MIDs[!is.na(MIDs)]
+> 
+> 
+> mids1 <- MIDs[1:1000]
+> mids2 <- MIDs[1001:length(MIDs)]
+> summary.stk <-
++   bind_rows(stk_trail(con) %>% 
++               filter(mid %in% mids1,
++                      time >= to_date("2009-01-01", "YYYY:MM:DD"),
++                      time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
++               group_by(mid) %>% 
++               summarise(n.stk = n(),
++                         min.time = min(time, na.rm = TRUE),
++                         max.time = max(time, na.rm = TRUE)) %>% 
++               collect(n = Inf),
++             stk_trail(con) %>% 
++               filter(mid %in% mids2,
++                      time >= to_date("2009-01-01", "YYYY:MM:DD"),
++                      time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
++               group_by(mid) %>% 
++               summarise(n.stk = n(),
++                         min.time = min(time, na.rm = TRUE),
++                         max.time = max(time, na.rm = TRUE)) %>% 
++               collect(n = Inf))
+> print(c(nrow(summary.lgs), nrow(summary.stk)))
+[1] 1668 1664
+> 
+> # NOTE: get here more records than in the original summary because 
+> #       some vessels have multiple mid
+> d <- 
++   summary.stk %>% 
++   left_join(vid.stk %>% 
++               select(mid, vid), by = "mid") %>% 
++   full_join(summary.lgs, by = "vid") %>% 
++   group_by(vid) %>% 
++   mutate(n.mid = n()) %>% 
++   ungroup() %>% 
++   left_join(mar:::vessel_registry(con, standardize = TRUE) %>% 
++               select(vid, name) %>% 
++               collect(n = Inf)) %>% 
++   select(vid, mid, name, n.lgs, n.stk, n.mid, everything())
+Joining, by = "vid"
+> # Vessels with no matching mobileid
+> d %>% 
++   filter(is.na(mid)) %>% 
++   select(vid, name, n.lgs, n.gid:max.date) %>% 
++   knitr::kable()
+
+
+|  vid|name                 | n.lgs| n.gid|min.date   |max.date   |
+|----:|:--------------------|-----:|-----:|:----------|:----------|
+|   44|KRISTBJÖRG           |     1|     1|2017-01-25 |2017-01-25 |
+|   72|KRISTINN LÁRUSSON    |     4|     1|2011-05-02 |2011-05-09 |
+|  256|KRISTRÚN II          |   251|     1|2009-01-02 |2011-06-26 |
+|  711|SIF                  |     5|     1|2015-08-02 |2015-08-13 |
+|  962|ÓSKAR                |   238|     1|2009-01-26 |2009-04-23 |
+| 1083|VALUR                |     7|     1|2011-07-12 |2011-07-24 |
+| 1599|ÖNGULL               |   105|     3|2011-04-21 |2015-07-14 |
+| 1612|HALLGRÍMUR           |   236|     1|2010-09-21 |2011-06-12 |
+| 1786|ABBA                 |    15|     1|2012-11-05 |2012-11-29 |
+| 1793|GUÐJÓN EIRÍKSSON     |     7|     1|2009-08-04 |2009-08-12 |
+| 1805|SÆRIF                |    10|     1|2013-04-02 |2013-04-14 |
+| 1860|ÚTLAGINN             |     8|     1|2012-07-03 |2012-07-19 |
+| 1936|ÁSTHILDUR            |    12|     1|2018-06-04 |2018-06-28 |
+| 1975|DÓRA                 |    12|     1|2018-06-04 |2018-06-28 |
+| 2031|HÓPSNES              |     9|     1|2011-07-12 |2011-07-26 |
+| 2123|ÁSGEIR FRÍMANNS      |     3|     1|2009-04-27 |2009-04-30 |
+| 2132|EYDÍS                |     3|     1|2012-12-04 |2012-12-12 |
+| 2154|ÁRBAKUR              |  1542|     2|2009-01-20 |2013-01-26 |
+| 2191|GUÐMUNDA TORFADÓTTIR |     1|     1|2011-12-28 |2011-12-28 |
+| 2344|SVANBORG             |     5|     1|2019-04-01 |2019-04-29 |
+| 2362|HREFNA               |     6|     2|2013-03-13 |2013-04-02 |
+| 2644|ANDERS               |    11|     1|2009-04-04 |2009-04-30 |
+| 2730|BEITIR               |   743|     1|2009-03-05 |2013-10-08 |
+| 2957|PÁLL JÓNSSON         |   216|     1|2020-01-13 |2020-12-21 |
+| 2962|VÖRÐUR               |   574|     1|2019-12-13 |2020-12-13 |
+| 2966|STEINUNN             |   869|     1|2020-02-27 |2020-12-19 |
+| 5371|JÓHANN               |     7|     1|2014-06-02 |2014-06-12 |
+| 5844|ÁSA BJÖRG            |     3|     1|2015-08-06 |2015-08-11 |
+| 6155|HAFRÓ                |    84|     1|2012-05-02 |2015-06-18 |
+| 6160|SVALAN               |     9|     1|2014-07-01 |2014-07-17 |
+| 6304|MÁR                  |    14|     1|2009-08-04 |2009-08-27 |
+| 6320|ALDA                 |     6|     1|2009-08-04 |2009-08-12 |
+| 6383|GRÉTAR               |     5|     1|2012-06-04 |2012-06-13 |
+| 6535|EYFELL               |     1|     1|2013-09-19 |2013-09-19 |
+| 6553|FLÓKI                |     1|     1|2017-02-14 |2017-02-14 |
+| 6624|HRÖNN                |     6|     1|2014-05-05 |2014-05-14 |
+| 6781|JÓHANNES GUNNAR      |    12|     1|2011-06-01 |2011-07-12 |
+| 6809|VÍÐIR                |     9|     1|2010-06-01 |2010-07-12 |
+| 6932|SÆLI                 |     5|     1|2011-07-13 |2011-07-25 |
+| 7142|KIÐEY                |     5|     1|2012-08-01 |2012-08-09 |
+| 7193|KJARTAN              |    10|     1|2020-08-06 |2020-08-30 |
+| 7306|SVANURINN            |     7|     1|2011-07-08 |2011-07-26 |
+| 7365|BÚI                  |     1|     1|2020-05-06 |2020-05-06 |
+| 7714|JÓNAS GUNNARSSON     |   222|     1|2012-05-31 |2019-08-20 |
+| 9047|HJÖRLEIFUR           |     7|     1|2011-07-04 |2011-07-12 |
+| 9908|Grímur Óskr.         |     9|     1|2018-04-05 |2018-05-08 |
+| 9911|Sæfari               |    10|     1|2016-05-09 |2016-06-04 |
+| 9928|Óskráður             |    15|     1|2016-05-11 |2019-06-24 |
+| 9938|Ármann               |     9|     1|2016-05-16 |2016-06-04 |
+> #Vessels with low logbook records
+> d %>% 
++   filter(!is.na(mid),
++          n.lgs <= 10) %>% 
++   arrange(n.lgs, -n.stk) %>% 
++   knitr::kable()
+
+
+|  vid|    mid|name        | n.lgs| n.stk| n.mid|min.time            |max.time            | n.gid|min.date   |max.date   |
+|----:|------:|:-----------|-----:|-----:|-----:|:-------------------|:-------------------|-----:|:----------|:----------|
+| 1344| 103310|BRIMILL     |     1| 25259|     1|2009-07-07 17:31:18 |2019-09-29 14:30:07 |     1|2010-07-25 |2010-07-25 |
+| 2649| 102258|SJÓLI       |     1|  1528|     1|2009-01-27 09:53:10 |2020-08-25 21:48:16 |     1|2010-08-28 |2010-08-28 |
+| 5815| 103427|LUNDEY      |     1|   137|     1|2010-07-16 10:05:31 |2016-06-26 14:32:32 |     1|2016-06-26 |2016-06-26 |
+| 6631| 103641|REYNIR      |     1|    42|     1|2009-09-06 10:36:28 |2016-10-11 13:29:24 |     1|2010-12-06 |2010-12-06 |
+| 6855| 101208|NONNI       |     1|     2|     1|2013-06-05 21:04:12 |2013-06-05 21:04:52 |     1|2013-06-06 |2013-06-06 |
+| 7308| 103706|SÁL         |     1|     2|     1|2012-06-20 05:45:51 |2012-06-20 05:46:31 |     1|2016-05-19 |2016-05-19 |
+| 1581| 101519|FAXI        |     2| 12391|     1|2009-01-02 14:07:39 |2012-11-01 18:05:44 |     1|2010-11-30 |2010-12-03 |
+| 6222| 101533|GEIRMUNDUR  |     2|  7947|     1|2009-02-13 17:05:15 |2015-11-09 15:47:36 |     1|2009-08-09 |2009-08-10 |
+| 6212| 103538|HERMANN     |     2|  1952|     1|2014-05-12 03:02:00 |2020-07-01 08:38:01 |     1|2010-09-11 |2010-09-19 |
+| 2186| 100453|MAGNÚS      |     2|     2|     1|2010-06-13 20:11:55 |2014-06-13 21:14:20 |     1|2019-07-02 |2019-07-09 |
+| 6389| 106045|SÉRA ÁRNI   |     3| 25159|     1|2009-06-30 16:13:56 |2020-08-17 05:23:01 |     1|2012-08-31 |2014-08-22 |
+| 5903| 101789|EYGLÓ       |     4|  3834|     1|2010-02-12 11:27:48 |2016-10-08 11:24:57 |     1|2010-08-03 |2010-08-10 |
+| 6627| 100477|SÆMI        |     4|  3486|     1|2010-04-25 11:13:31 |2017-06-18 11:25:25 |     1|2012-06-04 |2012-06-19 |
+| 6048| 100988|SVALA       |     4|  1712|     1|2009-05-16 15:37:33 |2013-05-12 21:39:20 |     1|2009-07-23 |2009-07-29 |
+| 6453| 103613|TÓTI        |     5|  1878|     2|2012-03-21 09:37:36 |2014-05-09 18:56:44 |     1|2013-05-02 |2013-05-29 |
+| 6129| 100014|STÓRI DÍMON |     5|  1535|     1|2010-07-12 15:46:31 |2019-08-30 16:45:31 |     1|2012-05-04 |2012-05-21 |
+| 6019| 103481|GOÐANES     |     5|  1118|     1|2017-04-10 14:54:55 |2020-12-26 11:58:35 |     1|2019-07-09 |2019-08-29 |
+| 5871| 101942|STAKKUR     |     5|  1014|     1|2009-07-14 14:39:14 |2016-08-04 03:03:12 |     1|2009-07-19 |2009-07-29 |
+| 1350| 102524|BEGGI       |     5|   451|     1|2012-07-30 16:26:34 |2014-09-16 11:19:10 |     1|2014-06-10 |2014-08-11 |
+| 6854| 103166|SNÆR        |     5|   189|     1|2009-05-01 08:06:11 |2019-08-24 12:42:32 |     1|2010-02-01 |2010-07-12 |
+| 6453| 133055|TÓTI        |     5|    13|     2|2019-05-22 06:22:55 |2020-06-15 13:59:48 |     1|2013-05-02 |2013-05-29 |
+| 7079| 101278|SIGRÚN      |     5|    10|     1|2016-06-03 10:59:52 |2020-08-28 14:54:11 |     1|2012-06-05 |2012-06-14 |
+| 5877| 103440|GUSTUR      |     7|  1408|     1|2009-07-11 22:45:00 |2020-10-03 18:47:43 |     1|2010-06-01 |2010-07-12 |
+| 7708| 110623|MUNINN      |     7|  1295|     1|2013-07-18 17:20:25 |2020-06-25 15:48:55 |     1|2014-06-02 |2014-07-15 |
+| 7769| 110782|SEIGUR      |     7|  1138|     1|2013-07-30 18:04:42 |2014-01-22 14:54:24 |     1|2013-08-14 |2013-08-27 |
+| 2006| 101333|ÁRDÍS       |     7|   738|     1|2009-06-29 12:02:11 |2009-07-22 08:53:42 |     1|2009-06-30 |2009-07-22 |
+| 6478| 100189|UNNUR       |     8|  2804|     1|2010-05-17 09:35:12 |2011-08-09 18:01:20 |     1|2011-07-04 |2011-08-09 |
+| 2024| 102230|BIRTA       |     8|   358|     1|2009-01-02 09:29:49 |2020-05-13 15:41:08 |     1|2009-01-03 |2009-01-21 |
+| 2360| 100819|NORÐURLJÓS  |     9|  4265|     1|2009-01-05 13:02:38 |2017-10-15 14:02:58 |     1|2014-07-28 |2016-06-12 |
+| 5996| 103471|RAGGI       |     9|  1458|     1|2012-05-22 11:46:16 |2018-05-24 17:27:09 |     1|2012-06-11 |2012-08-07 |
+| 6755| 102025|SKUTLA      |     9|  1059|     1|2009-04-18 08:42:15 |2019-04-06 15:25:35 |     1|2010-05-25 |2012-06-29 |
+| 7372| 100845|NANNA       |    10|  8177|     1|2009-03-21 08:57:26 |2017-07-03 02:46:33 |     1|2009-07-08 |2009-08-12 |
+> 
+> # write out, do a separate analysis, see checks.Rmd
+> d %>% write_rds("data/VID_MID.rds")
+> 
+> vidmid_lookup <- 
++   read_rds("data/VID_MID.rds") %>% 
++   select(vid, mid)
+> 
+> #
+> # end: LAST MINUTE STUFF - moved R/02_match_vid-mid.R here
+> # ------------------------------------------------------------------------------
+> 
+> LB <-
++   bind_rows(lgs1 %>% select(visir, vid, gid, t1, t2),
++             lgs2B %>% select(visir, vid, gid, t1, t2)) %>%
++   left_join(vidmid_lookup,
++             by = "vid") %>%
++   select(vid, mid, visir, gid, t1, t2) %>%
++   pivot_longer(cols = c(t1, t2),
++                names_to = "startend",
++                values_to = "time") %>%
++   arrange(vid, time) %>%
++   mutate(year = year(time))
+> 
+> # missing vessels (surprised how few) - need to be filtered out
+> LB %>%
++   filter(is.na(mid)) %>%
++   count(vid) %>% 
++   as.data.frame()
+    vid    n
+1   256  494
+2   962  476
+3  1083   14
+4  1599  206
+5  1612  472
+6  1786   30
+7  1793   14
+8  1860   16
+9  1936   24
+10 1975   24
+11 2031   18
+12 2154 3084
+13 2362    2
+14 2644   20
+15 2730 1486
+16 2957  420
+17 2962 1148
+18 2966 1738
+19 5371   14
+20 6155  168
+21 6160   18
+22 6304   28
+23 6320   12
+24 6624   12
+25 6781   24
+26 6809   18
+27 7193   20
+28 7306   14
+29 7714  442
+30 9047   12
+31 9908   18
+32 9911   20
+33 9928   30
+34 9938   18
+> 
+> # Note that below we do not filter by mid - need to double check
+> LB <-
++   LB %>%
++   filter(!is.na(mid))
+> 
+> LB %>% write_rds("data/LGS_corrected_use.rds")
+> visir_visir_lookup %>% write_rds("data/LGS_visir_visir_lookup.rds")
+> 
+> 
+> devtools::session_info()
+─ Session info ───────────────────────────────────────────────────────────────
+ setting  value                       
+ version  R version 4.0.4 (2021-02-15)
+ os       CentOS Linux 8              
+ system   x86_64, linux-gnu           
+ ui       X11                         
+ language (EN)                        
+ collate  is_IS.UTF-8                 
+ ctype    is_IS.UTF-8                 
+ tz       Atlantic/Reykjavik          
+ date     2021-04-20                  
+
+─ Packages ───────────────────────────────────────────────────────────────────
+ package     * version    date       lib source                                
+ assertthat    0.2.1      2019-03-21 [1] CRAN (R 4.0.2)                        
+ backports     1.2.1      2020-12-09 [1] CRAN (R 4.0.3)                        
+ blob          1.2.1      2020-01-20 [1] CRAN (R 4.0.2)                        
+ broom         0.7.6      2021-04-05 [1] CRAN (R 4.0.4)                        
+ cachem        1.0.4      2021-02-13 [1] CRAN (R 4.0.4)                        
+ callr         3.6.0      2021-03-28 [1] CRAN (R 4.0.4)                        
+ cellranger    1.1.0      2016-07-27 [1] CRAN (R 4.0.2)                        
+ cli           2.4.0      2021-04-05 [1] CRAN (R 4.0.4)                        
+ cluster       2.1.2      2021-04-17 [1] CRAN (R 4.0.4)                        
+ colorspace    2.0-0      2020-11-11 [1] CRAN (R 4.0.3)                        
+ crayon        1.4.1      2021-02-08 [1] CRAN (R 4.0.4)                        
+ data.table  * 1.14.0     2021-02-21 [1] CRAN (R 4.0.4)                        
+ DBI         * 1.1.1      2021-01-15 [1] CRAN (R 4.0.4)                        
+ dbplyr        1.4.4      2020-05-27 [1] CRAN (R 4.0.4)                        
+ Deriv         4.1.3      2021-02-24 [1] CRAN (R 4.0.4)                        
+ desc          1.3.0      2021-03-05 [1] CRAN (R 4.0.4)                        
+ devtools      2.4.0      2021-04-07 [1] CRAN (R 4.0.4)                        
+ doBy          4.6.9      2021-03-09 [1] CRAN (R 4.0.4)                        
+ dplyr       * 1.0.5      2021-03-05 [1] CRAN (R 4.0.4)                        
+ ellipsis      0.3.1      2020-05-15 [1] CRAN (R 4.0.2)                        
+ fansi         0.4.2      2021-01-15 [1] CRAN (R 4.0.3)                        
+ fastmap       1.1.0      2021-01-25 [1] CRAN (R 4.0.3)                        
+ forcats     * 0.5.1      2021-01-27 [1] CRAN (R 4.0.3)                        
+ foreign       0.8-81     2020-12-22 [1] CRAN (R 4.0.3)                        
+ fs            1.5.0      2020-07-31 [1] CRAN (R 4.0.2)                        
+ generics      0.1.0      2020-10-31 [1] CRAN (R 4.0.3)                        
+ ggplot2     * 3.3.3      2020-12-30 [1] CRAN (R 4.0.3)                        
+ glue          1.4.2      2020-08-27 [1] CRAN (R 4.0.2)                        
+ gtable        0.3.0      2019-03-25 [1] CRAN (R 4.0.2)                        
+ haven         2.4.0      2021-04-14 [1] CRAN (R 4.0.4)                        
+ highr         0.9        2021-04-16 [1] CRAN (R 4.0.4)                        
+ hms           1.0.0      2021-01-13 [1] CRAN (R 4.0.3)                        
+ httr          1.4.2      2020-07-20 [1] CRAN (R 4.0.2)                        
+ jsonlite      1.7.2      2020-12-09 [1] CRAN (R 4.0.3)                        
+ knitr         1.32       2021-04-14 [1] CRAN (R 4.0.4)                        
+ lattice       0.20-41    2020-04-02 [1] CRAN (R 4.0.2)                        
+ lifecycle     1.0.0      2021-02-15 [1] CRAN (R 4.0.4)                        
+ lubridate   * 1.7.10     2021-02-26 [1] CRAN (R 4.0.4)                        
+ magrittr      2.0.1      2020-11-17 [1] CRAN (R 4.0.3)                        
+ mapdata       2.3.0      2018-03-30 [1] CRAN (R 4.0.2)                        
+ maps          3.3.0      2018-04-03 [1] CRAN (R 4.0.2)                        
+ maptools      1.1-1      2021-03-15 [1] CRAN (R 4.0.4)                        
+ mar         * 0.0.3.9001 2021-03-17 [1] Github (fishvice/mar@78349bf)         
+ MASS          7.3-53.1   2021-02-12 [1] CRAN (R 4.0.4)                        
+ Matrix        1.3-2      2021-01-06 [1] CRAN (R 4.0.3)                        
+ memoise       2.0.0      2021-01-26 [1] CRAN (R 4.0.3)                        
+ modelr        0.1.8      2020-05-19 [1] CRAN (R 4.0.2)                        
+ munsell       0.5.0      2018-06-12 [1] CRAN (R 4.0.2)                        
+ PBSmapping    2.73.0     2021-01-13 [1] CRAN (R 4.0.3)                        
+ pillar        1.6.0      2021-04-13 [1] CRAN (R 4.0.4)                        
+ pkgbuild      1.2.0      2020-12-15 [1] CRAN (R 4.0.3)                        
+ pkgconfig     2.0.3      2019-09-22 [1] CRAN (R 4.0.2)                        
+ pkgload       1.2.1      2021-04-06 [1] CRAN (R 4.0.4)                        
+ prettyunits   1.1.1      2020-01-24 [1] CRAN (R 4.0.2)                        
+ processx      3.5.1      2021-04-04 [1] CRAN (R 4.0.4)                        
+ ps            1.6.0      2021-02-28 [1] CRAN (R 4.0.4)                        
+ purrr       * 0.3.4      2020-04-17 [1] CRAN (R 4.0.2)                        
+ R6            2.5.0      2020-10-28 [1] CRAN (R 4.0.3)                        
+ Rcpp          1.0.6      2021-01-15 [1] CRAN (R 4.0.3)                        
+ readr       * 1.4.0      2020-10-05 [1] CRAN (R 4.0.2)                        
+ readxl        1.3.1      2019-03-13 [1] CRAN (R 4.0.2)                        
+ remotes       2.3.0      2021-04-01 [1] CRAN (R 4.0.4)                        
+ reprex        2.0.0      2021-04-02 [1] CRAN (R 4.0.4)                        
+ rlang         0.4.10     2020-12-30 [1] CRAN (R 4.0.3)                        
+ ROracle     * 1.3-1      2016-10-26 [2] CRAN (R 4.0.1)                        
+ rprojroot     2.0.2      2020-11-15 [1] CRAN (R 4.0.3)                        
+ rstudioapi    0.13       2020-11-12 [1] CRAN (R 4.0.3)                        
+ rvest         1.0.0      2021-03-09 [1] CRAN (R 4.0.4)                        
+ scales        1.1.1      2020-05-11 [1] CRAN (R 4.0.2)                        
+ sessioninfo   1.1.1      2018-11-05 [1] CRAN (R 4.0.2)                        
+ sp            1.4-5      2021-01-10 [1] CRAN (R 4.0.3)                        
+ stringi       1.5.3      2020-09-09 [1] CRAN (R 4.0.2)                        
+ stringr     * 1.4.0      2019-02-10 [1] CRAN (R 4.0.2)                        
+ testthat      3.0.2      2021-02-14 [1] CRAN (R 4.0.4)                        
+ tibble      * 3.1.0      2021-02-25 [1] CRAN (R 4.0.4)                        
+ tidyr       * 1.1.3      2021-03-03 [1] CRAN (R 4.0.4)                        
+ tidyselect    1.1.0      2020-05-11 [1] CRAN (R 4.0.2)                        
+ tidyverse   * 1.3.0      2021-04-18 [1] Github (tidyverse/tidyverse@5316484)  
+ usethis       2.0.1      2021-02-10 [1] CRAN (R 4.0.4)                        
+ utf8          1.2.1      2021-03-12 [1] CRAN (R 4.0.4)                        
+ vctrs         0.3.7      2021-03-29 [1] CRAN (R 4.0.4)                        
+ vmstools      0.75       2021-01-07 [1] Github (nielshintzen/vmstools@8ff113a)
+ withr         2.4.1      2021-01-26 [1] CRAN (R 4.0.3)                        
+ xfun          0.22       2021-03-11 [1] CRAN (R 4.0.4)                        
+ xml2          1.3.2      2020-04-23 [1] CRAN (R 4.0.2)                        
+
+[1] /home/haf/einarhj/r/x86_64/library
+[2] /nfs/hafkaldi/opt/hafkaldi/local/linux/lib/R/site/4.0/x86_64/library
+[3] /usr/lib64/R/library
+> 
