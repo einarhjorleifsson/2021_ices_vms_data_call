@@ -1,9 +1,9 @@
-# ------------------------------------------------------------------------------
+# How to run things ------------------------------------------------------------
 # run this as:
-#  nohup R < R/01_logbook-corrections.R --vanilla > logs/logbooks.log &
+#  nohup R < R/01_logbook-corrections.R --vanilla > logs/01_logbooks-corrections.log &
 lubridate::now()
 
-# ------------------------------------------------------------------------------
+# A brief outline --------------------------------------------------------------
 # A single logbook munging to then be used downstream for stk match
 # This script is based on merging 2020 ices datacall internal script and that
 # used in the 2019 anr-request. Added then gear corrections and other things.
@@ -27,8 +27,13 @@ lubridate::now()
 #  5. Mesh size "corrections"
 #  6. Set gear width proxy
 #  7. gear class of corrected gid
-#  8. Add vessel information
-#  9. Add metier
+#  8. Match vid with mobileid in stk
+#  9. Add vessel information - only needed for ICES datacall
+# 10. Add metier - only needed for ICES datacall
+# 11. ICES rectangles - only needed for ICES datacall
+# 12. Anonymize vid - only needed for ICES datacall
+
+
 
 YEARS <- 2020:2009
 
@@ -38,8 +43,7 @@ library(lubridate)
 library(mar)
 con <- connect_mar()
 
-# ------------------------------------------------------------------------------
-# 0. Functions
+# 0. Functions -----------------------------------------------------------------
 match_nearest_date <- function(lb, ln) {
   
   lb.dt <-
@@ -67,11 +71,10 @@ match_nearest_date <- function(lb, ln) {
   
 }
 # end: 0. Functions
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 1. Get and merge logbook and landings data
+
+# 1. Get and merge logbook and landings data -----------------------------------
 vessels <- 
   mar:::vessel_registry(con, standardize = TRUE) %>% 
   # no dummy vessels
@@ -91,6 +94,8 @@ tmp.lb.catch <-
             by = "visir") %>%
   collect(n = Inf) %>% 
   arrange(visir, desc(catch), sid) %>%
+  # If catch is NA, assume it is zero
+  mutate(catch = replace_na(catch, 0)) %>% 
   group_by(visir) %>%
   mutate(total = sum(catch),
          p = catch / total,
@@ -118,14 +123,6 @@ LGS <-
 #  "add" data (may happen in joins) downstream
 n0 <- nrow(LGS)
 paste("Original number of records:", n0)
-# Flag vessels with less than 5 records (assume they are vid errors)
-LGS <- 
-  LGS %>% 
-  group_by(vid) %>% 
-  mutate(n.records = n()) %>% 
-  ungroup() %>% 
-  mutate(use = ifelse(n.records > 5, TRUE, FALSE)) %>% 
-  select(-n.records)
 # get the gear from landings
 tmp.ln.base <-
   mar:::ln_catch(con) %>%
@@ -167,13 +164,18 @@ LGS %>%
   summarise(n.vids = n_distinct(vid)) %>% 
   spread(gid.lb, n.vids)
 paste("Number of records:", nrow(LGS))
+LGS %>% write_rds("LGS_raw.rds")
 # rm(tmp.lb.base, tmp.lb.catch, tmp.lb.mobile, tmp.lb.static, tmp.ln.base, tmp.lb.ln.match)
 # end: Get and merge logbook and landings data
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 2. Gear corrections
+# NOTE: What to do if no effort registered?? -----------------------------------
+LGS %>% 
+  count(gid.lb, !is.na(effort)) %>% 
+  knitr::kable(caption = "Missing effort - correct once gid has been corrected")
+
+
+# 2. Gear corrections ----------------------------------------------------------
 gears <-
   tbl_mar(con, "ops$einarhj.gear") %>% collect(n = Inf) %>%
   mutate(description = ifelse(gid == 92, "G.halibut net", description),
@@ -277,11 +279,9 @@ LGS %>%
   mutate(p = n / sum(n) * 100) %>% 
   knitr::kable(caption = "Number and percentage of missing gear")
 # end: Gear corrections
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 3. Lump some gears
+# 3. Lump some gears -----------------------------------------------------------
 LGS <-
   LGS %>% 
   mutate(gid = case_when(gid %in% c(10, 12) ~ 4,   # purse seines
@@ -295,13 +295,20 @@ LGS <-
   mutate(gid = ifelse(gid %in% c(15, 37, 38, 40), 15, gid))
 paste("Number of records:", nrow(LGS))
 # end: Lump some gears
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 4. Cap effort and end of action
+# 4. Cap effort and end of action ----------------------------------------------
+# Guestimate median effort where effort is missing, not critical
+median.effort <- 
+  LGS %>% 
+  group_by(gid) %>% 
+  summarise(median = median(effort, na.rm = TRUE)) %>% 
+  drop_na()
 LGS <- 
   LGS %>% 
+  left_join(median.effort, by = "gid") %>% 
+  mutate(effort = ifelse(!is.na(effort), effort, median)) %>% 
+  select(-median) %>% 
   # cap effort hours
   mutate(effort = case_when(effort > 12 & gid ==  6 ~ 12,
                             effort > 24 & gid ==  7 ~ 24,
@@ -320,20 +327,11 @@ LGS <-
          t2 = if_else(overlap & !is.na(t22), t22, t2, as.POSIXct(NA))) %>%
   ungroup() %>% 
   select(-t22) 
-# if either t1 or t2 is missing from mobile towing gear except dredges, 
-#   flag that records should not be used donwstream
-LGS <- 
-  LGS %>% 
-  mutate(use = ifelse(gid %in% c(6, 7, 9, 14) & (is.na(t1) | is.na(t2)),
-                      FALSE,
-                      use))
 paste("Number of records:", nrow(LGS))
 # end: 4. Cap effort and end of action
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 5. Mesh size "corrections"
+# 5. Mesh size "corrections" ---------------------------------------------------
 LGS <- 
   LGS %>% 
   # "correct" mesh size
@@ -362,11 +360,9 @@ LGS %>%
   knitr::kable(caption = "Mesh sizes and number of records by gear")
 paste("Number of records:", nrow(LGS))
 # end:5. Mesh size "corrections"
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 6. Set gear width proxy
+# 6. Set gear width proxy ------------------------------------------------------
 LGS <- 
   LGS %>% 
   mutate(gear.width = case_when(gid %in% c(6L, 7L, 9L, 14L) ~ as.numeric(sweeps),
@@ -407,46 +403,141 @@ LGS %>%
             sd.gear.width = sd(gear.width)) %>% 
   knitr::kable(caption = "Statistics on gear width")
 paste("Number of records:", nrow(LGS))
-# end: Set gear width proxy
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
 # Get rid of intermediary variables
 LGS <- 
   LGS %>% 
   select(-c(gid.lb, gid.ln, gc.lb, gc.ln, sid.target, catch, p, n.sid, i,
             overlap))
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 7. gear class of corrected gid
+# 7. gear class of corrected gid -----------------------------------------------
 LGS <- 
   LGS %>% 
   left_join(gears %>% select(gid, gclass),
             by = "gid")
 paste("Number of records:", nrow(LGS))
-# ------------------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
-# 8. Add vessel information
+
+# 8. Match vid with mobileid in stk --------------------------------------------
+vid.stk <-
+  mar:::stk_mobile_icelandic(con, correct = TRUE, vidmatch = TRUE) %>% 
+  collect(n = Inf)
+# Create a summary overview of logbook and stk informations, not necessary
+#  for the workflow
+summary.lgs <-
+  LGS %>% 
+  group_by(vid) %>% 
+  summarise(n.lgs = n(),
+            n.gid = n_distinct(gid),
+            min.date = min(date),
+            max.date = max(date),
+            .groups = "drop")
+MIDs <- 
+  summary.lgs %>% 
+  left_join(vid.stk, by = "vid") %>% 
+  pull(mid) %>% 
+  unique()
+# unexpected
+table(!is.na(MIDs))
+MIDs <- MIDs[!is.na(MIDs)]
+# can only have 1000 records in filter downstream
+mids1 <- MIDs[1:1000]
+mids2 <- MIDs[1001:length(MIDs)]
+summary.stk <-
+  bind_rows(stk_trail(con) %>% 
+              filter(mid %in% mids1,
+                     time >= to_date("2009-01-01", "YYYY:MM:DD"),
+                     time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
+              group_by(mid) %>% 
+              summarise(n.stk = n(),
+                        min.time = min(time, na.rm = TRUE),
+                        max.time = max(time, na.rm = TRUE)) %>% 
+              collect(n = Inf),
+            stk_trail(con) %>% 
+              filter(mid %in% mids2,
+                     time >= to_date("2009-01-01", "YYYY:MM:DD"),
+                     time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
+              group_by(mid) %>% 
+              summarise(n.stk = n(),
+                        min.time = min(time, na.rm = TRUE),
+                        max.time = max(time, na.rm = TRUE)) %>% 
+              collect(n = Inf))
+# NOTE: get here more records than in the logbooks summary because 
+#       some vessels have multiple mid, and then some, ... 
+print(c(nrow(summary.lgs), nrow(summary.stk)))
+d <- 
+  summary.stk %>% 
+  left_join(vid.stk %>% 
+              select(mid, vid), by = "mid") %>% 
+  full_join(summary.lgs, by = "vid") %>% 
+  group_by(vid) %>% 
+  mutate(n.mid = n()) %>% 
+  ungroup() %>% 
+  left_join(mar:::vessel_registry(con, standardize = TRUE) %>% 
+              select(vid, name) %>% 
+              collect(n = Inf), by = "vid") %>% 
+  select(vid, mid, name, n.lgs, n.stk, n.mid, everything()) %>% 
+  arrange(vid)
+d %>% 
+  filter(is.na(mid)) %>% 
+  select(vid, name, n.lgs, n.gid:max.date) %>% 
+  knitr::kable(caption = "Vessels with no matching mobileid")
+d %>% 
+  filter(!is.na(mid),
+         n.lgs <= 10) %>% 
+  arrange(n.lgs, -n.stk) %>% 
+  knitr::kable(caption = "Vessels with low logbook records")
+# NOTE: Not sure if this is needed:
+d %>% write_rds("data/VID_MID.rds")
+vidmid_lookup <- 
+  d %>% 
+  select(vid, mid)
+# add mobileid as string to LGS, this could also have been archieved with nest
+d2 <- 
+  d %>% 
+  select(vid, mid) %>% 
+  arrange(vid) %>% 
+  group_by(vid) %>% 
+  mutate(midnr = 1:n()) %>% 
+  spread(midnr, mid) %>% 
+  mutate(mids = case_when(!is.na(`3`) ~ paste(`1`, `2`, `3`, sep = "-"),
+                          !is.na(`2`) ~ paste(`1`, `2`, sep = "-"),
+                          TRUE ~ as.character(`1`))) %>% 
+  select(vid, mids)
+# NOTE: Should maybe put a flag here for no mid match
+LGS <- 
+  LGS %>% 
+  left_join(d2)
+paste("Number of records:", nrow(LGS))
+# end: 8. Match vid with mobileid in stk
+
+
+# 9. Add vessel information ----------------------------------------------------
 vessels <- 
   mar:::vessel_registry(con, standardize = TRUE) %>% 
   filter(!vid %in% c(0, 1, 3:5),
          !is.na(name)) %>% 
   arrange(vid) %>% 
-  collect(n = Inf)
+  collect(n = Inf) %>% 
+  filter(vid %in% unique(LGS$vid))
+vessels %>% filter(is.na(engine_kw) | is.na(length)) %>% 
+  knitr::kable(caption = "Skip sem eru ekki skráð með kw eða lengd\nspurning hvort eigi að sleppa")
+strange.vids <-
+  vessels %>% filter(is.na(engine_kw) | is.na(length)) %>% 
+  pull(vid)
+LGS %>% 
+  filter(vid %in% strange.vids) %>% 
+  count(vid) %>% 
+  knitr::kable(caption = "Sleppa þessum færslum, via use=FALSE further downstream")
 LGS <- 
   LGS %>% 
   left_join(vessels %>% 
               select(vid, kw = engine_kw, length, length_class))
 paste("Number of records:", nrow(LGS))
-# ------------------------------------------------------------------------------
 
-
-# ------------------------------------------------------------------------------
-# 9. Add metier
+# 10. Add metier ---------------------------------------------------------------
 metier <-
   tribble(
     ~gid, ~dcf4, ~dcf5, ~dcf5b,
@@ -477,8 +568,6 @@ LGS <-
 # Flag gear not to be used downstream, derive dcf6
 LGS <-
   LGS %>% 
-  # NOTE: FILTER OUT UNKNOWN GID and then some
-  mutate(use = ifelse(gid %in% c(-666, 17, 18), FALSE, use)) %>% 
   select(-mesh) %>% 
   rename(mesh = mesh.std) %>% 
   mutate(dcf6 = paste(dcf4, dcf5b, mesh, "0_0", sep = "_")) %>% 
@@ -488,10 +577,9 @@ LGS %>%
   count(gid, dcf4, dcf5, dcf5b, mesh, dcf6) %>% 
   knitr::kable(caption = "Records by metier")
 paste("Number of records:", nrow(LGS))
-# ------------------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
-# 10. ICES rectangles
+
+# 11. add ICES rectangles ------------------------------------------------------
 res <- data.frame(SI_LONG = LGS$lon1,
                   SI_LATI = LGS$lat1)
 LGS <- 
@@ -502,10 +590,9 @@ LGS %>%
   count(valid.ices) %>% 
   knitr::kable(caption = "Valid ICES rectangles")
 paste("Number of records:", nrow(LGS))
-# ------------------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
-# 11. Anonymize vid
+
+# 12. Anonymize vid ------------------------------------------------------------
 #     May want to do this more downstream
 anonymize.vid <-
   LGS %>%
@@ -517,197 +604,156 @@ LGS <-
   LGS %>% 
   left_join(anonymize.vid, by = "vid")
 paste("Number of records:", nrow(LGS))
-# ------------------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------------------
-# 11. Save file for downstream processing
-LGS %>% write_rds("data/LGS_corrected.rds")
-# ------------------------------------------------------------------------------
-
-
-# ADDENDUM ---------------------------------------------------------------------
-#  This is still in the making, needs to be reviewed carefully
-#  Deals with matching vid and mobileid
-#  Deals with all but gid 6, 7, 9, and 14 need to be done on daily summary in
-#   order to process the ais data. Hence loose the original resolution of
-#   visir
-#  Question is what should the logbook annex vs the ais annex source file be
-#   (lumped visir by day or not). Prefer that same data is used for both.
-#   Check if "nest"-ing may be a good way to handle that
-#   CURRENTLY THE AIS MUNGING IS BASED ON data/LGS_corrected_use.rds
-#    that is generated below
-
-
-LGS2 <- 
+# 13. Determine what records to filter downstream ------------------------------
+# 
+LGS22 <- LGS
+LGS <- 
   LGS %>% 
-  # NOTE: FILTER OUT UNKNOWN GID, where t1 and t2 not reported for 
-  #   gid 6, 7, 9 & 14 and then some
-  filter(use)
-n0 <- nrow(LGS2)
-(nrow(LGS) - nrow(LGS2)) / nrow(LGS) * 100
+  #mutate(i = !is.na(kw) & !is.na(length),
+  #       use = ifelse(i, TRUE, FALSE),
+  #       use.not = ifelse(i, NA_character_, "kw or length not registered")) %>% #count(use, use.not)
+  mutate(i = !gid %in% c(-666, 17, 18),
+         use = ifelse(i, TRUE, FALSE),
+         use.not = ifelse(i, NA_character_, "drop gear")) %>% #count(use, use.not)
+  mutate(i = gid %in% c(6, 7, 9, 14) & (is.na(t1) | is.na(t2)),
+         use = ifelse(i, FALSE, use),
+         use.not = ifelse(i, "t1 or t2 missing", use.not)) %>% 
+  group_by(vid) %>% 
+  mutate(n.records = n()) %>% 
+  ungroup() %>% 
+  mutate(i = n.records <= 5,
+         use = ifelse(i, FALSE, use),
+         use.not = ifelse(i, "lb vid records <= 5", use.not)) %>% 
+  mutate(i = is.na(kw) | is.na(length),
+         use = ifelse(i, FALSE, use),
+         use.not = ifelse(i, "vid w. no kw or length", use.not)) %>% 
+  select(-n.records)
+LGS %>% 
+  count(use, valid.ices)
+LGS %>% 
+  count(use, gid, use.not) %>% 
+  knitr::kable(caption = "Records that retained (FALSE are dropped)")
+LGS %>% 
+  count(use) %>% 
+  mutate(p = round(n / sum(n) * 100, 3)) %>% 
+  knitr::kable(caption = "Proportion of records")
+LGS %>% 
+  mutate(no.mid = ifelse(is.na(mids), TRUE, FALSE)) %>% 
+  count(no.mid) %>% 
+  mutate(p = round(n / sum(n) * 100, 3)) %>% 
+  knitr::kable(caption = "Records with no mid, will be lost in the ais/vms processing")
+# end: XX. Determine what records to filter in later down streaming
 
-# easiest approach: for gear class not 6, 7, 9, 14 summarise the catch for the day
-# and generate a new visir and set t1 and t2 as start and end time of the day
+
+# 14. Save raw (no records filtered) file --------------------------------------
+#     Should be as downstream as possible
+LGS %>% write_rds("data/LGS_corrected.rds")
+
+
+# 15. FILTER OUT RECORDS -------------------------------------------------------
+#   NOTE: Need to think about non-valid ices rectangles
+#         The issue is that it may be invalid in the lgs but valid in the ais
+LGS %>% 
+  count(use, use.not, valid.ices) %>% 
+  mutate(p = round(n / sum(n) * 100, 3))
+LGS <- 
+  LGS %>% 
+  filter(use, valid.ices) %>% 
+  select(-c(use, use.not, valid.ices))
+# end: FILTER OUT RECORDS
+
+
+# 16. Collapse all gear but 6, 7, 9, 14 to daily records -----------------------
 lgs1 <-
-  LGS2 %>%
-  filter(gid %in% c(6, 7, 9, 14),
-         !is.na(t1), !is.na(t2))
+  LGS %>%
+  filter(gid %in% c(6, 7, 9, 14))
+#  For gear class not 6, 7, 9, 14 summarise the catch for the day
+#  and generate a new visir and set t1 and t2 as start and end time of the day
+#  The visir used is the lowest visir within a day
 lgs2 <-
-  LGS2 %>%
+  LGS %>%
   filter(!gid %in% c(6, 7, 9, 14))
-nrow(lgs1) + nrow(lgs2) == nrow(LGS2)
-
-table(!is.na(lgs2$vid))
-table(!is.na(lgs2$date))
-table(!is.na(lgs2$gid))
+nrow(lgs1) + nrow(lgs2) == nrow(LGS)
+# generate a visir-visir lookup within the day
+#     the statistics will be summarised by visir.min (to be renamed visir
+#     downstream .
 visir_visir_lookup <- 
   lgs2 %>% 
   group_by(vid, date, gid) %>% 
-  mutate(visir1 = min(visir)) %>% 
+  mutate(visir.min = min(visir),
+         n.set = n()) %>% 
   ungroup() %>% 
-  select(visir1, visir)
-nrow(lgs2)
-length(unique(visir_visir_lookup$visir))
-length(unique(lgs2$visir))
-
+  select(visir.min, visir, n.set)
+# there are some large number of records occurring within a single day
+#   check if this make sense, but at least expected for dredge per example
+#   below.
+visir_visir_lookup %>% count(n.set) %>% arrange(-n.set)
+visir_visir_lookup %>% arrange(-n.set) %>% 
+  filter(visir.min %in% -1204185) %>% 
+  left_join(LGS) %>% 
+  select(visir.min:vid, date, lon1, lat1, effort, effort_unit) %>% 
+  knitr::kable()
+# "median" ICES rectangle? 
+# Calculate the median lon and lat within a day and the new ices-rectangle.
+#    Note, by calculating median one may end up with an ices rectangle that is 
+#     solely on land.
+lgs2 <- 
+  lgs2 %>% 
+  group_by(vid, date) %>% 
+  mutate(lon.m = median(lon1, na.rm = TRUE),
+         lat.m = median(lat1, na.rm = TRUE)) %>% 
+  ungroup()
+nrow(lgs1) + nrow(lgs2) == nrow(LGS)
+# Recalculate ICES rectangle based on the median position
+res <- data.frame(SI_LONG = lgs2$lon.m,
+                  SI_LATI = lgs2$lat.m)
+lgs2 <- 
+  lgs2 %>% 
+  select(-c(ices)) %>% 
+  mutate(ices = vmstools::ICESrectangle(res)) %>% 
+  mutate(valid.ices = !is.na(vmstools::ICESrectangle2LonLat(ices)$SI_LONG))
+lgs2 %>% 
+  count(valid.ices)
+nrow(lgs1) + nrow(lgs2) == nrow(LGS)
+# End: "median" ICES rectangle
+# Collapse daily records and then merge with daily records
 lgs2B <- 
   lgs2 %>% 
-  group_by(vid, date, gid, dcf4, dcf5, dcf5b) %>%
+  # group by all variables that are needed downstream and then some
+  group_by(vid, vid0, mids, year, date, gid, ices, dcf4, dcf5, dcf6, length, length_class) %>%
   # get here all essential variables that are needed downstream
   summarise(visir = min(visir),
             n.sets = n(),
-            towtime = sum(towtime),
-            effort = sum(effort),
-            total = sum(total),
-            gear.width = mean(gear.width),
+            effort = sum(effort, na.rm = TRUE),
+            total = sum(total, na.rm = TRUE),
+            kw = mean(kw, na.rm = TRUE),
+            gear.width = mean(gear.width, na.rm = TRUE),
             .groups = "drop") %>%
   mutate(t1 = ymd_hms(paste0(year(date), "-", month(date), "-", day(date),
                              " 00:00:00")),
          t2 = ymd_hms(paste0(year(date), "-", month(date), "-", day(date),
                              " 23:59:00")))
+sum(lgs2B$effort)
+sum(lgs2$effort)
+# minor checks
+#   missing unit of effort, fix upstream - not really critical
+LGS %>% 
+  group_by(gid, effort_unit) %>% 
+  summarise(effort = sum(effort),
+            kw = mean(kw))
+LGS %>% filter(is.na(effort_unit)) %>% pull(vid) %>% unique()
+LGS %>% 
+  filter(is.na(kw)) %>% 
+  count(vid)
+LGS %>% 
+  filter(is.na(effort)) %>% 
+  count(gid)
+# Merge stuff again, note some variables in lgs1 not in lgs2B
+LGS.collapsed <- 
+  bind_rows(lgs1, lgs2B)
 
-nrow(lgs2B)
-length(unique(visir_visir_lookup$visir1))
-
-# 1. Transform the logbook data such time is stored as a single variable,
-#     using an additional variable (startend) to indicate the if the time
-#     value refers to the start or end of the haul.
-
-
-# ------------------------------------------------------------------------------
-# LAST MINUTE STUFF - moved R/02_match_vid-mid.R here
-# Note this is a bit recursive because LGS_corrected.rds is used to 
-# find the match. Should possible source the file here
-# put the R/02_match_vid-mid.r code here
-summary.lgs <-
-  LGS %>% 
-  group_by(vid) %>% 
-  summarise(n.lgs = n(),
-            n.gid = n_distinct(gid),
-            min.date = min(date),
-            max.date = max(date),
-            .groups = "drop")
-# ------------------------------------------------------------------------------
-# get mobileid for vid
-vid.stk <-
-  mar:::stk_mobile_icelandic(con, correct = TRUE, vidmatch = TRUE) %>% 
-  collect(n = Inf)
-MIDs <- 
-  summary.lgs %>% 
-  left_join(vid.stk) %>% 
-  pull(mid) %>% 
-  unique()
-# unexpected
-table(!is.na(MIDs), useNA = "ifany")
-MIDs <- MIDs[!is.na(MIDs)]
-
-
-mids1 <- MIDs[1:1000]
-mids2 <- MIDs[1001:length(MIDs)]
-summary.stk <-
-  bind_rows(stk_trail(con) %>% 
-              filter(mid %in% mids1,
-                     time >= to_date("2009-01-01", "YYYY:MM:DD"),
-                     time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
-              group_by(mid) %>% 
-              summarise(n.stk = n(),
-                        min.time = min(time, na.rm = TRUE),
-                        max.time = max(time, na.rm = TRUE)) %>% 
-              collect(n = Inf),
-            stk_trail(con) %>% 
-              filter(mid %in% mids2,
-                     time >= to_date("2009-01-01", "YYYY:MM:DD"),
-                     time <  to_date("2020-12-31", "YYYY:MM:DD")) %>% 
-              group_by(mid) %>% 
-              summarise(n.stk = n(),
-                        min.time = min(time, na.rm = TRUE),
-                        max.time = max(time, na.rm = TRUE)) %>% 
-              collect(n = Inf))
-print(c(nrow(summary.lgs), nrow(summary.stk)))
-
-# NOTE: get here more records than in the original summary because 
-#       some vessels have multiple mid
-d <- 
-  summary.stk %>% 
-  left_join(vid.stk %>% 
-              select(mid, vid), by = "mid") %>% 
-  full_join(summary.lgs, by = "vid") %>% 
-  group_by(vid) %>% 
-  mutate(n.mid = n()) %>% 
-  ungroup() %>% 
-  left_join(mar:::vessel_registry(con, standardize = TRUE) %>% 
-              select(vid, name) %>% 
-              collect(n = Inf)) %>% 
-  select(vid, mid, name, n.lgs, n.stk, n.mid, everything())
-# Vessels with no matching mobileid
-d %>% 
-  filter(is.na(mid)) %>% 
-  select(vid, name, n.lgs, n.gid:max.date) %>% 
-  knitr::kable()
-#Vessels with low logbook records
-d %>% 
-  filter(!is.na(mid),
-         n.lgs <= 10) %>% 
-  arrange(n.lgs, -n.stk) %>% 
-  knitr::kable()
-
-# write out, do a separate analysis, see checks.Rmd
-d %>% write_rds("data/VID_MID.rds")
-
-vidmid_lookup <- 
-  read_rds("data/VID_MID.rds") %>% 
-  select(vid, mid)
-
-#
-# end: LAST MINUTE STUFF - moved R/02_match_vid-mid.R here
-# ------------------------------------------------------------------------------
-
-LB <-
-  bind_rows(lgs1 %>% select(visir, vid, gid, t1, t2),
-            lgs2B %>% select(visir, vid, gid, t1, t2)) %>%
-  left_join(vidmid_lookup,
-            by = "vid") %>%
-  select(vid, mid, visir, gid, t1, t2) %>%
-  pivot_longer(cols = c(t1, t2),
-               names_to = "startend",
-               values_to = "time") %>%
-  arrange(vid, time) %>%
-  mutate(year = year(time))
-
-# missing vessels (surprised how few) - need to be filtered out
-LB %>%
-  filter(is.na(mid)) %>%
-  count(vid) %>% 
-  as.data.frame()
-
-# Note that below we do not filter by mid - need to double check
-LB <-
-  LB %>%
-  filter(!is.na(mid))
-
-LB %>% write_rds("data/LGS_corrected_use.rds")
-visir_visir_lookup %>% write_rds("data/LGS_visir_visir_lookup.rds")
-
+LGS.collapsed %>% write_rds("data/LGS_collapsed.rds")
 
 devtools::session_info()
