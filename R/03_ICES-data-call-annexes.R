@@ -89,9 +89,12 @@ LGS <- read_rds("data/LGS_corrected.rds")
 # NOTE: Why so few dredges
 annex2 %>% 
   count(dcf4)
+
+
 library(sf)
 sq <- read_sf("ftp://ftp.hafro.is/pub/data/shapes/ices_rectangles.gpkg")
-plot(sq["ecoregion"])
+#plot(sq["ecoregion"])
+
 annex2 <- 
   annex2 %>% 
   filter(ices %in% sq$icesname) %>% 
@@ -103,11 +106,13 @@ annex2 <-
                                   length_class == "12-15" ~ "D",
                                   length_class == ">=15" ~ "E"))
 
-# outcommented so i can run annex1
-#annex2 %>% 
-#  write_csv("delivery/iceland_annex2_2009_2020_2021-05-02_04.csv",
-#            na = "", 
-#            col_names = FALSE)
+annex2 <- 
+  annex2 %>% 
+  mutate(vids = ifelse(is.na(vids), "-9", vids))
+#annex2 %>%
+# write_csv("delivery/iceland_annex2_2009_2020_2021-05-05_01.csv",
+#           na = "",
+#           col_names = FALSE)
 
 # end: Annex 2 - logbooks
 # ------------------------------------------------------------------------------
@@ -282,8 +287,12 @@ annex1 %>%
   knitr::kable()
 
 
+annex1 <- 
+  annex1 %>% 
+  mutate(vids = ifelse(is.na(vids), "-9", vids))
+
 annex1 %>% 
-  write_csv("delivery/iceland_annex1_2009_2020_2021-05-02_01.csv",
+  write_csv("delivery/iceland_annex1_2009_2020_2021-05-05_01.csv",
             na = "", 
             col_names = FALSE)
 
